@@ -10,6 +10,9 @@ library
   build-depends: base
                , common
                , frontend
+               , hs-abci-server
+               , hs-abci-types
+               , hs-abci-extra
                , obelisk-backend
                , obelisk-route
   exposed-modules:
