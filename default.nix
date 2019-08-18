@@ -6,6 +6,7 @@
     # Uncomment and set this to `true` to indicate your acceptance:
     # config.android_sdk.accept_license = false;
   }
+, withHoogle ? false
 }:
 with obelisk;
 project ./. ({ pkgs, hackGet, ... }:
@@ -19,6 +20,8 @@ project ./. ({ pkgs, hackGet, ... }:
     addBuildInputs = inputs: { buildInputs ? [], ... }: { buildInputs = inputs ++ buildInputs; };
 
   in {
+    inherit withHoogle;
+
     android.applicationId = "systems.obsidian.obelisk.examples.minimal";
     android.displayName = "Obelisk Minimal Example";
     ios.bundleIdentifier = "systems.obsidian.obelisk.examples.minimal";
