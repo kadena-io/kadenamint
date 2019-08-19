@@ -10,12 +10,15 @@ library
   build-depends: ansi-terminal
                , async
                , base
+               , binary
                , colour
                , common
                , frontend
                , hs-abci-server
                , hs-abci-types
                , hs-abci-extra
+               , http-types
+               , lens
                , mtl
                , obelisk-backend
                , obelisk-route

@@ -12,19 +12,27 @@ module Backend where
 
 import Control.Concurrent
 import Control.Concurrent.Async
+import Control.Lens (strict, view)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader
+import Data.Binary.Builder
 import Data.Colour.SRGB (Colour, sRGB24)
+import Data.String (IsString)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
+import qualified Data.Text.Encoding.Error as T
+import Network.HTTP.Types
 import Shelly
 import System.Console.ANSI
 import Prelude hiding (log)
 
+import Data.ByteArray.HexString (HexString(..))
+import qualified Data.ByteArray.HexString as Hex
 import Network.ABCI.Server                              (serveApp)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
 import Network.ABCI.Server.Middleware.RequestLogger
-import Network.ABCI.Types.Messages.Request              (CheckTx)
+import Network.ABCI.Types.Messages.Request              (CheckTx(..))
 
 import Common.Route
 import Obelisk.Backend
@@ -53,14 +61,27 @@ runNode = flip runReaderT nodeEnv $ do
 
   shelly resetNetwork
   log "Node has been reset"
-  liftIO $ threadDelay $ seconds 1
   shelly launchNode
 
 broadcastTransactions :: IO ()
-broadcastTransactions = flip runReaderT broadcastEnv $ do
+broadcastTransactions = do
   liftIO $ threadDelay $ seconds 2
-  log "About to broadcast transaction"
-  shelly $ silently $ run_ "curl" ["localhost:26657/broadcast_tx_sync?tx=\"abc\""]
+  broadcastPactTransaction "(+ 1 2)"
+  liftIO $ threadDelay $ seconds 2
+  broadcastPactTransaction "(+ 1 (* a 3))"
+
+broadcastPactTransaction :: Text -> IO ()
+broadcastPactTransaction pt = flip runReaderT broadcastEnv $ do
+  log $ "Broadcasting code:\t" <> pt
+  case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just (doubleQuotes $ T.encodeUtf8 pt))] of
+    Left err -> do
+      log "Failed encoding of transaction with error:"
+      log $ tshow err
+      fatal
+    Right pathAndQuery -> do
+      let url = "localhost:26657" <> pathAndQuery
+      log $ "Broadcasting at:\t" <> url
+      shelly $ silently $ run_ "curl" [url]
 
 runABCI :: IO ()
 runABCI = do
@@ -111,8 +132,21 @@ app = App $ \req -> case req of
   RequestCommit _ -> pure def
 
 check :: MonadEffects m => CheckTx -> m (Response 'MTCheckTx)
-check x = do
-  log $ tshow x
+check (CheckTx x) = do
+  log $ "Decoding:\t" <> Hex.toText x
+  case decodeHexString x of
+    Left err -> log $ "Failed decode with error: " <> tshow err
+    Right p -> do
+      log $ "Decoded:\t" <> p
+      output <- shelly $ silently $ errExit False $ do
+        output <- run "echo" [p] -|- run "pact" []
+        code <- lastExitCode
+        case code of
+          0 -> pure $ Right output
+          _ -> Left <$> lastStderr
+      log $ case output of
+        Left err -> "Pact errored:\n" <> err
+        Right r -> "Pact evaluated:\t" <> T.strip r
   pure def
 
 {- Utils -}
@@ -134,3 +168,15 @@ sgrify codes txt = mconcat
 
 seconds :: Int -> Int
 seconds = (*1e6)
+
+fatal :: m ()
+fatal = error "fatal error"
+
+doubleQuotes :: (IsString a, Semigroup a) => a -> a
+doubleQuotes t = "\"" <> t <> "\""
+
+decodeHexString :: HexString -> Either T.UnicodeException Text
+decodeHexString (HexString bs) = _TODO_ "make sure this is the right decoding" $ T.decodeUtf8' bs
+
+_TODO_ :: Text -> a -> a
+_TODO_ _ = id
