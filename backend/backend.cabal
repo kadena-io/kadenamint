@@ -10,14 +10,17 @@ library
   build-depends: ansi-terminal
                , async
                , base
+               , colour
                , common
                , frontend
                , hs-abci-server
                , hs-abci-types
                , hs-abci-extra
+               , mtl
                , obelisk-backend
                , obelisk-route
                , shelly
+               , text
   exposed-modules:
     Backend
   ghc-options: -Wall
