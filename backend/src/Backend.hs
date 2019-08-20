@@ -12,7 +12,7 @@ module Backend where
 
 import Control.Concurrent
 import Control.Concurrent.Async
-import Control.Lens (strict, view)
+import Control.Lens                                     (strict, view, (&), (.~))
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader
 import Data.Binary.Builder
@@ -33,6 +33,7 @@ import Network.ABCI.Server                              (serveApp)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
 import Network.ABCI.Server.Middleware.RequestLogger
 import Network.ABCI.Types.Messages.Request              (CheckTx(..))
+import Network.ABCI.Types.Messages.Response             (_checkTxCode)
 
 import Common.Route
 import Obelisk.Backend
@@ -133,9 +134,16 @@ app = App $ \req -> case req of
 
 check :: MonadEffects m => CheckTx -> m (Response 'MTCheckTx)
 check (CheckTx x) = do
+  let accept msg = do
+        log msg
+        pure def
+      reject msg = do
+        log msg
+        pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
+
   log $ "Decoding:\t" <> Hex.toText x
   case decodeHexString x of
-    Left err -> log $ "Failed decode with error: " <> tshow err
+    Left err -> reject $ "Failed decode with error: " <> tshow err
     Right p -> do
       log $ "Decoded:\t" <> p
       output <- shelly $ silently $ errExit False $ do
@@ -144,10 +152,9 @@ check (CheckTx x) = do
         case code of
           0 -> pure $ Right output
           _ -> Left <$> lastStderr
-      log $ case output of
-        Left err -> "Pact errored:\n" <> err
-        Right r -> "Pact evaluated:\t" <> T.strip r
-  pure def
+      case output of
+        Left err -> reject $ "Pact error:\n" <> err
+        Right r -> accept $ "Pact result:\n" <> T.strip r
 
 {- Utils -}
 
