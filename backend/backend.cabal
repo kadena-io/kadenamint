@@ -13,6 +13,7 @@ library
                , binary
                , colour
                , common
+               , conduit-extra
                , frontend
                , hs-abci-server
                , hs-abci-types

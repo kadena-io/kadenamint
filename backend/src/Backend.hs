@@ -18,6 +18,7 @@ import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader
 import Data.Binary.Builder
 import Data.Colour.SRGB (Colour, sRGB24)
+import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
 import Data.Foldable (for_)
 import Data.String (IsString)
 import Data.Text (Text)
@@ -31,7 +32,7 @@ import Prelude hiding (log)
 
 import Data.ByteArray.HexString (HexString(..))
 import qualified Data.ByteArray.HexString as Hex
-import Network.ABCI.Server                              (serveApp)
+import Network.ABCI.Server                              (serveAppWith)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
 import Network.ABCI.Server.Middleware.RequestLogger
 import Network.ABCI.Types.Messages.Request              (CheckTx(..))
@@ -62,9 +63,9 @@ timelineEntries :: [(Int, Actor, ReaderT Env IO ())]
 timelineEntries =
   let
     deleteNetwork = run_ "rm" ["-rf", tendermintHome]
-    initNetwork = tendermint ["init"]
+    initNetwork = tendermint "init" []
 
-    launchNode = shelly $ tendermint ["node"]
+    launchNode = shelly $ tendermintNode
     resetNetwork = do
       shelly deleteNetwork
       shelly initNetwork
@@ -92,14 +93,14 @@ broadcastPactTransaction pt = flip runReaderT broadcastEnv $ do
       log $ tshow err
       fatal
     Right pathAndQuery -> do
-      let url = "localhost:26657" <> pathAndQuery
+      let url = mkAddress defaultTendermintRPCHostPort <> pathAndQuery
       log $ "Broadcasting at:\t" <> url
       shelly $ silently $ run_ "curl" [url]
 
 runABCI :: IO ()
 runABCI = do
   _logger <- mkLogStdout -- too noisy
-  serveApp $ transformApp transformHandler app
+  serveAppWith (mkServerSettings defaultABCIAppHostPort) mempty $ transformApp transformHandler app
     where
       transformHandler :: EffectsT (Response t) -> IO (Response t)
       transformHandler er = do
@@ -132,13 +133,30 @@ abciEnv = Env
 
 
 {- Tendermint -}
+tendermint :: Text -> [Text] -> Sh ()
+tendermint tmCmd cmdArgs = run_ "tendermint" $ tmArgs <> [tmCmd] <> cmdArgs
+  where
+    tmArgs = ["--home", tendermintHome]
+
+tendermintNode :: Sh ()
+tendermintNode = tendermint "node"
+  [ "--p2p.laddr", mkAddress defaultTendermintP2PHostPort
+  , "--rpc.laddr", "tcp://" <> mkAddress defaultTendermintRPCHostPort & _UPSTREAM_ "incoherent with other address flags"
+  , "--proxy_app", mkAddress defaultABCIAppHostPort
+  ]
+
 tendermintHome :: IsString a => a
 tendermintHome = "./.tendermint"
 
-tendermint :: [Text] -> Sh ()
-tendermint args = run_ "tendermint" $ ["--home", tendermintHome] <> args
+defaultTendermintP2PHostPort :: (Text, Int)
+defaultTendermintP2PHostPort = ("0.0.0.0", 26656)
+
+defaultTendermintRPCHostPort :: (Text, Int)
+defaultTendermintRPCHostPort = ("127.0.0.1", 26657)
 
 {- ABCI app -}
+defaultABCIAppHostPort :: IsString a => (a, Int)
+defaultABCIAppHostPort = ("127.0.0.1", 26658)
 
 type Err = Text
 type EffectsT = ReaderT Env (ExceptT Err IO)
@@ -183,6 +201,13 @@ check (CheckTx x) = do
         Right r -> accept $ "Pact result:\n" <> T.strip r
 
 {- Utils -}
+type HostPort a = IsString a => (a, Int)
+
+mkAddress :: HostPort Text -> Text
+mkAddress (host, port) = host <> ":" <> tshow port
+
+mkServerSettings :: HostPort HostPreference -> ServerSettings
+mkServerSettings (host, port) = serverSettings port host
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
@@ -209,7 +234,11 @@ doubleQuotes :: (IsString a, Semigroup a) => a -> a
 doubleQuotes t = "\"" <> t <> "\""
 
 decodeHexString :: HexString -> Either T.UnicodeException Text
-decodeHexString (HexString bs) = _TODO_ "make sure this is the right decoding" $ T.decodeUtf8' bs
+decodeHexString (HexString bs) = T.decodeUtf8' bs & _TODO_ "make sure this is the right decoding"
+
+{- Issue tracking -}
+_UPSTREAM_ :: Text -> a -> a
+_UPSTREAM_ _ = id
 
 _TODO_ :: Text -> a -> a
 _TODO_ _ = id
