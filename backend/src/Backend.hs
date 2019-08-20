@@ -18,6 +18,7 @@ import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader
 import Data.Binary.Builder
 import Data.Colour.SRGB (Colour, sRGB24)
+import Data.Foldable (for_)
 import Data.String (IsString)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -46,33 +47,43 @@ backend = Backend
   }
 
 {- Process orchestration -}
+data Actor
+  = Actor_Node
+  | Actor_Broadcast
+  deriving (Eq, Ord, Enum, Bounded, Show)
 
 runEverything :: IO ()
 runEverything = do
-  withAsync runNode $ \_ ->
-    withAsync broadcastTransactions $ \_ ->
+  withAsync (runActor Actor_Node) $ \_ ->
+    withAsync (runActor Actor_Broadcast) $ \_ ->
       runABCI
 
-runNode :: IO ()
-runNode = flip runReaderT nodeEnv $ do
+timelineEntries :: [(Int, Actor, ReaderT Env IO ())]
+timelineEntries =
   let
     deleteNetwork = run_ "rm" ["-rf", "~/.tendermint"]
     initNetwork = run_ "tendermint" ["init"]
-    launchNode = run_ "tendermint" ["node"]
-    resetNetwork = deleteNetwork *> initNetwork
 
-  shelly resetNetwork
-  log "Node has been reset"
-  shelly launchNode
+    launchNode = shelly $ run_ "tendermint" ["node"]
+    resetNetwork = do
+      shelly deleteNetwork
+      shelly initNetwork
+      log "Node has been reset"
+  in
+    [ (seconds 0, Actor_Node, resetNetwork)
+    , (seconds 0, Actor_Node, launchNode)
+    , (seconds 2, Actor_Broadcast, broadcastPactTransaction "(+ 1 2)")
+    , (seconds 2, Actor_Broadcast, broadcastPactTransaction "(+ 1 (* a 3))")
+    ]
 
-broadcastTransactions :: IO ()
-broadcastTransactions = do
-  liftIO $ threadDelay $ seconds 2
-  broadcastPactTransaction "(+ 1 2)"
-  liftIO $ threadDelay $ seconds 2
-  broadcastPactTransaction "(+ 1 (* a 3))"
+runActor :: Actor -> IO ()
+runActor actor = flip runReaderT nodeEnv $ do
+  for_ timelineEntries $ \(entryDelay, entryActor, entryAction) -> do
+    when (actor == entryActor) $ do
+      liftIO $ threadDelay entryDelay
+      entryAction
 
-broadcastPactTransaction :: Text -> IO ()
+broadcastPactTransaction :: MonadIO m => Text -> m ()
 broadcastPactTransaction pt = flip runReaderT broadcastEnv $ do
   log $ "Broadcasting code:\t" <> pt
   case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just (T.encodeUtf8 $ doubleQuotes pt))] of
