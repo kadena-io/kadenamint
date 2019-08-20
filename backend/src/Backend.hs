@@ -13,6 +13,7 @@ module Backend where
 import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Lens                                     (strict, view, (&), (.~))
+import Control.Monad.Except                             (MonadError(..), ExceptT(..), runExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader
 import Data.Binary.Builder
@@ -33,7 +34,7 @@ import Network.ABCI.Server                              (serveApp)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
 import Network.ABCI.Server.Middleware.RequestLogger
 import Network.ABCI.Types.Messages.Request              (CheckTx(..))
-import Network.ABCI.Types.Messages.Response             (_checkTxCode)
+import Network.ABCI.Types.Messages.Response             (_checkTxCode, _exceptionError)
 
 import Common.Route
 import Obelisk.Backend
@@ -89,8 +90,13 @@ runABCI = do
   _logger <- mkLogStdout -- too noisy
   serveApp $ transformApp transformHandler app
     where
-      transformHandler :: EffectsT x -> IO x
-      transformHandler = flip runReaderT abciEnv
+      transformHandler :: EffectsT (Response t) -> IO (Response t)
+      transformHandler er = do
+        x <- runExceptT $ flip runReaderT abciEnv $ er
+        case x of
+          Right r -> pure r
+          Left l -> pure $ ResponseException $ def
+            & _exceptionError .~ l
 
 {- Env -}
 data Env = Env
@@ -115,8 +121,9 @@ abciEnv = Env
 
 {- ABCI app -}
 
-type EffectsT = ReaderT Env IO
-type MonadEffects m = (MonadIO m, MonadReader Env m)
+type Err = Text
+type EffectsT = ReaderT Env (ExceptT Err IO)
+type MonadEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
 app :: App EffectsT
 app = App $ \req -> case req of
@@ -161,7 +168,7 @@ check (CheckTx x) = do
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
-log :: MonadEffects m => Text -> m ()
+log :: (MonadIO m, MonadReader Env m) => Text -> m ()
 log txt = do
   p <- asks _env_printer
   liftIO $ putStrLn $ T.unpack $ p txt
