@@ -73,7 +73,7 @@ broadcastTransactions = do
 broadcastPactTransaction :: Text -> IO ()
 broadcastPactTransaction pt = flip runReaderT broadcastEnv $ do
   log $ "Broadcasting code:\t" <> pt
-  case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just (doubleQuotes $ T.encodeUtf8 pt))] of
+  case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just (T.encodeUtf8 $ doubleQuotes pt))] of
     Left err -> do
       log "Failed encoding of transaction with error:"
       log $ tshow err
