@@ -61,10 +61,10 @@ runEverything = do
 timelineEntries :: [(Int, Actor, ReaderT Env IO ())]
 timelineEntries =
   let
-    deleteNetwork = run_ "rm" ["-rf", "~/.tendermint"]
-    initNetwork = run_ "tendermint" ["init"]
+    deleteNetwork = run_ "rm" ["-rf", tendermintHome]
+    initNetwork = tendermint ["init"]
 
-    launchNode = shelly $ run_ "tendermint" ["node"]
+    launchNode = shelly $ tendermint ["node"]
     resetNetwork = do
       shelly deleteNetwork
       shelly initNetwork
@@ -129,6 +129,14 @@ nodeEnv = Env
 abciEnv = Env
   { _env_printer = sgrify [SetRGBColor Foreground green]
   }
+
+
+{- Tendermint -}
+tendermintHome :: IsString a => a
+tendermintHome = "./.tendermint"
+
+tendermint :: [Text] -> Sh ()
+tendermint args = run_ "tendermint" $ ["--home", tendermintHome] <> args
 
 {- ABCI app -}
 
