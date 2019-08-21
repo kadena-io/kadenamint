@@ -20,6 +20,7 @@ library
                , hs-abci-extra
                , http-types
                , lens
+               , memory
                , mtl
                , obelisk-backend
                , obelisk-route
