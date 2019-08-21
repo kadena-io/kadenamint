@@ -9,14 +9,15 @@
 {-# LANGUAGE TypeFamilies #-}
 module Backend where
 
-import Control.Concurrent
-import Control.Concurrent.Async
+import Control.Concurrent                               (threadDelay)
+import Control.Concurrent.Async                         (withAsync)
 import Control.Lens                                     (strict, view, (&), (.~))
+import Control.Monad                                    (when)
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), runExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
-import Control.Monad.Reader
+import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), asks, runReaderT)
 import Control.Monad.State                              (MonadState(..), StateT(..), evalStateT, get, modify)
-import Data.Binary.Builder
+import Data.Binary.Builder                              (toLazyByteString)
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
@@ -26,17 +27,18 @@ import Data.Text                                        (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
-import Network.HTTP.Types
+import Network.HTTP.Types                               (encodePath)
 import Shelly                                           (Sh, errExit, lastExitCode, lastStderr, shelly, silently, run, run_, (-|-))
-import System.Console.ANSI
+import System.Console.ANSI                              (SGR(..), ConsoleLayer(..), setSGRCode)
 import Text.Read as T                                   (readMaybe)
-import Prelude hiding                                   (log)
+
+import Prelude                                          hiding (log)
 
 import Data.ByteArray.HexString                         (HexString(..))
 import qualified Data.ByteArray.HexString as Hex
 import Network.ABCI.Server                              (serveAppWith)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
-import Network.ABCI.Server.Middleware.RequestLogger
+import Network.ABCI.Server.Middleware.RequestLogger     (mkLogStdout)
 import Network.ABCI.Types.Messages.Request              (CheckTx(..))
 import Network.ABCI.Types.Messages.Response             (_checkTxCode, _exceptionError)
 
