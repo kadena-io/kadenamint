@@ -6,6 +6,7 @@
 {-# LANGUAGE NumDecimals #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 module Backend where
@@ -16,7 +17,9 @@ import Control.Lens                                     (strict, view, (&), (.~)
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), runExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader
+import Control.Monad.State                              (MonadState(..), StateT(..), evalStateT, get, modify)
 import Data.Binary.Builder
+import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
 import Data.Colour.SRGB (Colour, sRGB24)
 import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
 import Data.Foldable (for_)
@@ -24,10 +27,11 @@ import Data.String (IsString)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import qualified Data.Text.Encoding.Error as T
+import qualified Data.Text.Encoding.Error as T          hiding (replace)
 import Network.HTTP.Types
-import Shelly
+import Shelly                                           (Sh, errExit, lastExitCode, lastStderr, shelly, silently, run, run_, (-|-))
 import System.Console.ANSI
+import Text.Read as T                                   (readMaybe)
 import Prelude hiding (log)
 
 import Data.ByteArray.HexString (HexString(..))
@@ -48,6 +52,8 @@ backend = Backend
   }
 
 {- Process orchestration -}
+type ActorEffects m = (MonadIO m, MonadReader Env m, MonadState Int m)
+
 data Actor
   = Actor_Node
   | Actor_Broadcast
@@ -59,7 +65,7 @@ runEverything = do
     withAsync (runActor Actor_Broadcast) $ \_ ->
       runABCI
 
-timelineEntries :: [(Int, Actor, ReaderT Env IO ())]
+timelineEntries :: [(Int, Actor, StateT Int (ReaderT Env IO) ())]
 timelineEntries =
   let
     deleteNetwork = run_ "rm" ["-rf", tendermintHome]
@@ -73,21 +79,36 @@ timelineEntries =
   in
     [ (seconds 0, Actor_Node, resetNetwork)
     , (seconds 0, Actor_Node, launchNode)
-    , (seconds 2, Actor_Broadcast, broadcastPactTransaction "(+ 1 2)")
-    , (seconds 2, Actor_Broadcast, broadcastPactTransaction "(+ 1 (* a 3))")
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "0")
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "0")
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(+ 1 2)")
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(+ 1 (* a 3))")
     ]
 
 runActor :: Actor -> IO ()
-runActor actor = flip runReaderT nodeEnv $ do
+runActor actor = flip runReaderT broadcastEnv $ flip evalStateT 0 $ do
   for_ timelineEntries $ \(entryDelay, entryActor, entryAction) -> do
     when (actor == entryActor) $ do
       liftIO $ threadDelay entryDelay
       entryAction
 
-broadcastPactTransaction :: MonadIO m => Text -> m ()
-broadcastPactTransaction pt = flip runReaderT broadcastEnv $ do
-  log $ "Broadcasting code:\t" <> pt
-  case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just (T.encodeUtf8 $ doubleQuotes pt))] of
+data PactTransaction = PactTransaction
+  { _pactTransaction_nonce :: Int
+  , _pactTransaction_code  :: Text
+  } deriving (Eq, Ord, Read, Show)
+
+broadcastPactTransaction :: ActorEffects m => Text -> m ()
+broadcastPactTransaction code = do
+  log $ "Broadcasting pact code:\t" <> code
+  nonce <- get
+  modify (+1)
+  broadcastTransaction $ tshow $ PactTransaction nonce code
+
+broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> m ()
+broadcastTransaction t = do
+  log $ "Broadcasting transaction:\t" <> t
+  let txHex = "0x" <> convertToBase Base16 (T.encodeUtf8 t)
+  case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just txHex)] of
     Left err -> do
       log "Failed encoding of transaction with error:"
       log $ tshow err
@@ -190,10 +211,13 @@ check (CheckTx x) = do
     Left err -> reject $ "Failed decode with error: " <> tshow err
     Right p -> do
       log $ "Decoded:\t" <> p
-      output <- shelly $ silently $ errExit False $ shecked $ run "echo" [p] -|- run "pact" []
-      case output of
-        Left err -> reject $ "Pact error:\n" <> err
-        Right r -> accept $ "Pact result:\n" <> T.strip r
+      case T.readMaybe (T.unpack p) of
+        Nothing -> reject $ "Failed to parse transaction"
+        Just (PactTransaction _ code) -> do
+          output <- shelly $ silently $ errExit False $ shecked $ run "echo" [code] -|- run "pact" []
+          case output of
+            Left err -> reject $ "Pact error:\n" <> err
+            Right r -> accept $ "Pact result:\n" <> T.strip r
 
 {- Utils -}
 type HostPort a = IsString a => (a, Int)
