@@ -18,11 +18,11 @@ import Control.Monad.Reader
 import Control.Monad.State                              (MonadState(..), StateT(..), evalStateT, get, modify)
 import Data.Binary.Builder
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
-import Data.Colour.SRGB (Colour, sRGB24)
+import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
-import Data.Foldable (for_)
-import Data.String (IsString)
-import Data.Text (Text)
+import Data.Foldable                                    (for_)
+import Data.String                                      (IsString)
+import Data.Text                                        (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
@@ -30,9 +30,9 @@ import Network.HTTP.Types
 import Shelly                                           (Sh, errExit, lastExitCode, lastStderr, shelly, silently, run, run_, (-|-))
 import System.Console.ANSI
 import Text.Read as T                                   (readMaybe)
-import Prelude hiding (log)
+import Prelude hiding                                   (log)
 
-import Data.ByteArray.HexString (HexString(..))
+import Data.ByteArray.HexString                         (HexString(..))
 import qualified Data.ByteArray.HexString as Hex
 import Network.ABCI.Server                              (serveAppWith)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
