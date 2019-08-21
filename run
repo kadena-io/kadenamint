@@ -1,0 +1,1 @@
+nix-shell -A shells.ghc --run "ghcid -c 'cabal new-repl all' -T runEverything"

@@ -1,4 +1,4 @@
-name: backend
+name: kadenamint
 version: 0.1
 cabal-version: >= 1.8
 build-type: Simple
@@ -12,9 +12,8 @@ library
                , base
                , binary
                , colour
-               , common
                , conduit-extra
-               , frontend
+               , data-default
                , hs-abci-server
                , hs-abci-types
                , hs-abci-extra
@@ -22,21 +21,16 @@ library
                , lens
                , memory
                , mtl
-               , obelisk-backend
-               , obelisk-route
                , shelly
                , text
   exposed-modules:
-    Backend
+    Kadenamint
   ghc-options: -Wall
 
-executable backend
+executable kadenamint
   main-is: main.hs
   hs-source-dirs: src-bin
   if impl(ghcjs)
     buildable: False
   build-depends: base
-               , backend
-               , common
-               , frontend
-               , obelisk-backend
+               , kadenamint

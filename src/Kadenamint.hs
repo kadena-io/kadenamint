@@ -7,7 +7,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
-module Backend where
+module Kadenamint where
 
 import Control.Concurrent                               (threadDelay)
 import Control.Concurrent.Async                         (withAsync)
@@ -21,6 +21,7 @@ import Data.Binary.Builder                              (toLazyByteString)
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
+import Data.Default                                     (Default(..))
 import Data.Foldable                                    (for_)
 import Data.String                                      (IsString)
 import Data.Text                                        (Text)
@@ -41,15 +42,6 @@ import Network.ABCI.Server.App                          (App(..), Request(..), R
 import Network.ABCI.Server.Middleware.RequestLogger     (mkLogStdout)
 import Network.ABCI.Types.Messages.Request              (CheckTx(..))
 import Network.ABCI.Types.Messages.Response             (_checkTxCode, _exceptionError)
-
-import Common.Route
-import Obelisk.Backend
-
-backend :: Backend BackendRoute FrontendRoute
-backend = Backend
-  { _backend_run = \_serve -> liftIO runEverything
-  , _backend_routeEncoder = backendRouteEncoder
-  }
 
 {- Process orchestration -}
 type ActorEffects m = (MonadIO m, MonadReader Env m, MonadState Int m)
