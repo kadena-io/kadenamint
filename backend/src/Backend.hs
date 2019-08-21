@@ -1,13 +1,11 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumDecimals #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 module Backend where
 
@@ -60,7 +58,7 @@ data Actor
   deriving (Eq, Ord, Enum, Bounded, Show)
 
 runEverything :: IO ()
-runEverything = do
+runEverything =
   withAsync (runActor Actor_Node) $ \_ ->
     withAsync (runActor Actor_Broadcast) $ \_ ->
       runABCI
@@ -71,7 +69,7 @@ timelineEntries =
     deleteNetwork = run_ "rm" ["-rf", tendermintHome]
     initNetwork = tendermint "init" []
 
-    launchNode = shelly $ tendermintNode
+    launchNode = shelly tendermintNode
     resetNetwork = do
       shelly deleteNetwork
       shelly initNetwork
@@ -86,8 +84,8 @@ timelineEntries =
     ]
 
 runActor :: Actor -> IO ()
-runActor actor = flip runReaderT broadcastEnv $ flip evalStateT 0 $ do
-  for_ timelineEntries $ \(entryDelay, entryActor, entryAction) -> do
+runActor actor = flip runReaderT broadcastEnv $ flip evalStateT 0 $
+  for_ timelineEntries $ \(entryDelay, entryActor, entryAction) ->
     when (actor == entryActor) $ do
       liftIO $ threadDelay entryDelay
       entryAction
@@ -125,14 +123,14 @@ runABCI = do
     where
       transformHandler :: EffectsT (Response t) -> IO (Response t)
       transformHandler er = do
-        x <- runExceptT $ flip runReaderT abciEnv $ er
+        x <- runExceptT $ runReaderT er abciEnv
         case x of
           Right r -> pure r
           Left l -> pure $ ResponseException $ def
             & _exceptionError .~ l
 
 {- Env -}
-data Env = Env
+newtype Env = Env
   { _env_printer :: Text -> Text
   }
 
@@ -184,7 +182,7 @@ type EffectsT = ReaderT Env (ExceptT Err IO)
 type MonadEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
 app :: App EffectsT
-app = App $ \req -> case req of
+app = App $ \case
   RequestEcho _ -> pure def
   RequestFlush _ -> pure def
   RequestInfo _ -> pure def
@@ -212,7 +210,7 @@ check (CheckTx x) = do
     Right p -> do
       log $ "Decoded:\t" <> p
       case T.readMaybe (T.unpack p) of
-        Nothing -> reject $ "Failed to parse transaction"
+        Nothing -> reject "Failed to parse transaction"
         Just (PactTransaction _ code) -> do
           output <- shelly $ silently $ errExit False $ shecked $ run "echo" [code] -|- run "pact" []
           case output of
