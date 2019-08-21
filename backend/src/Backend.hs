@@ -190,18 +190,20 @@ check (CheckTx x) = do
     Left err -> reject $ "Failed decode with error: " <> tshow err
     Right p -> do
       log $ "Decoded:\t" <> p
-      output <- shelly $ silently $ errExit False $ do
-        output <- run "echo" [p] -|- run "pact" []
-        code <- lastExitCode
-        case code of
-          0 -> pure $ Right output
-          _ -> Left <$> lastStderr
+      output <- shelly $ silently $ errExit False $ shecked $ run "echo" [p] -|- run "pact" []
       case output of
         Left err -> reject $ "Pact error:\n" <> err
         Right r -> accept $ "Pact result:\n" <> T.strip r
 
 {- Utils -}
 type HostPort a = IsString a => (a, Int)
+
+shecked :: Sh a -> Sh (Either Text a)
+shecked sh = do
+  output <- sh
+  lastExitCode >>= \case
+    0 -> pure $ Right output
+    _ -> Left <$> lastStderr
 
 mkAddress :: HostPort Text -> Text
 mkAddress (host, port) = host <> ":" <> tshow port
