@@ -29,7 +29,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
 import Network.HTTP.Types                               (encodePath)
-import Shelly                                           (Sh, errExit, lastExitCode, lastStderr, shelly, silently, run, run_, (-|-))
+import Shelly                                           (Sh, lastExitCode, lastStderr, shelly, silently, run_)
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..), setSGRCode)
 import Text.Read as T                                   (readMaybe)
 
@@ -42,6 +42,8 @@ import Network.ABCI.Server.App                          (App(..), Request(..), R
 import Network.ABCI.Server.Middleware.RequestLogger     (mkLogStdout)
 import Network.ABCI.Types.Messages.Request              (CheckTx(..))
 import Network.ABCI.Types.Messages.Response             (_checkTxCode, _exceptionError)
+import qualified Pact.Repl as Pact
+import qualified Pact.Repl.Types as Pact
 
 {- Process orchestration -}
 type ActorEffects m = (MonadIO m, MonadReader Env m, MonadState Int m)
@@ -73,7 +75,7 @@ timelineEntries =
     , (seconds 0, Actor_Node, launchNode)
     , (seconds 1, Actor_Broadcast, broadcastPactTransaction "0")
     , (seconds 1, Actor_Broadcast, broadcastPactTransaction "0")
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(+ 1 2)")
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "[1, (+ 2 3)]")
     , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(+ 1 (* a 3))")
     ]
 
@@ -206,10 +208,9 @@ check (CheckTx x) = do
       case T.readMaybe (T.unpack p) of
         Nothing -> reject "Failed to parse transaction"
         Just (PactTransaction _ code) -> do
-          output <- shelly $ silently $ errExit False $ shecked $ run "echo" [code] -|- run "pact" []
-          case output of
-            Left err -> reject $ "Pact error:\n" <> err
-            Right r -> accept $ "Pact result:\n" <> T.strip r
+          liftIO (Pact.evalRepl Pact.StringEval $ T.unpack code) >>= \case
+            Left err -> reject $ "Pact error:\n" <> T.pack err
+            Right r -> accept $ "Pact result:\n" <> T.strip (tshow r)
 
 {- Utils -}
 type HostPort a = IsString a => (a, Int)

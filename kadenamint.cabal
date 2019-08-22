@@ -21,6 +21,7 @@ library
                , lens
                , memory
                , mtl
+               , pact
                , shelly
                , text
   exposed-modules:
