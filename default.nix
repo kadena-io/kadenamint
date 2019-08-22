@@ -41,6 +41,7 @@ in rp.project ({ pkgs, hackGet, ... }:
     inherit withHoogle;
 
     packages = {
+      inherit pact;
       kadenamint = ./.;
     };
 
@@ -61,8 +62,6 @@ in rp.project ({ pkgs, hackGet, ... }:
             }) {};
 
         in {
-          pact = self.callCabal2nix "pact" pact {};
-
           # aeson 1.4.2
           aeson = (if self.ghc.isGhcjs or false
                    then (pkgs.lib.flip addBuildDepend self.hashable-time)
