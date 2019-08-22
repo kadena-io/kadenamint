@@ -6,6 +6,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 module Kadenamint where
 
@@ -29,7 +30,8 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
 import Network.HTTP.Types                               (encodePath)
-import Shelly                                           (Sh, lastExitCode, lastStderr, shelly, silently, run_)
+import Shelly                                           (Sh, shelly, silently, run_)
+import qualified Shelly as Sh
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..), setSGRCode)
 import Text.Read as T                                   (readMaybe)
 
@@ -44,6 +46,8 @@ import Network.ABCI.Types.Messages.Request              (CheckTx(..))
 import Network.ABCI.Types.Messages.Response             (_checkTxCode, _exceptionError)
 import qualified Pact.Repl as Pact
 import qualified Pact.Repl.Types as Pact
+
+import System.Which
 
 {- Process orchestration -}
 type ActorEffects m = (MonadIO m, MonadReader Env m, MonadState Int m)
@@ -146,10 +150,12 @@ abciEnv = Env
   { _env_printer = sgrify [SetRGBColor Foreground green]
   }
 
-
 {- Tendermint -}
+tendermintPath :: Sh.FilePath
+tendermintPath = Sh.fromText $ T.pack $(staticWhich "tendermint")
+
 tendermint :: Text -> [Text] -> Sh ()
-tendermint tmCmd cmdArgs = run_ "tendermint" $ tmArgs <> [tmCmd] <> cmdArgs
+tendermint tmCmd cmdArgs = run_ tendermintPath $ tmArgs <> [tmCmd] <> cmdArgs
   where
     tmArgs = ["--home", tendermintHome]
 
@@ -214,13 +220,6 @@ check (CheckTx x) = do
 
 {- Utils -}
 type HostPort a = IsString a => (a, Int)
-
-shecked :: Sh a -> Sh (Either Text a)
-shecked sh = do
-  output <- sh
-  lastExitCode >>= \case
-    0 -> pure $ Right output
-    _ -> Left <$> lastStderr
 
 mkAddress :: HostPort Text -> Text
 mkAddress (host, port) = host <> ":" <> tshow port

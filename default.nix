@@ -24,6 +24,14 @@ let
     nixpkgsOverlays = [ overlay ];
   };
 
+  recentNixpkgs = import (builtins.fetchTarball {
+    name = "nixos-master-2019-08-09";
+    url = https://github.com/nixos/nixpkgs/archive/c2cc6aa6703be230d5590690735c0581de6c0216.tar.gz;
+    sha256 = "1cxw3sg1bcaw40hsj634hfkq1szfr67gyxz44r680js9l6vvvwck";
+  }) {};
+
+  tendermint = recentNixpkgs.tendermint;
+
 in rp.project ({ pkgs, hackGet, ... }:
   let
     hs-abci = hackGet ./dep/hs-abci;
@@ -40,7 +48,7 @@ in rp.project ({ pkgs, hackGet, ... }:
       ghc = ["kadenamint"];
     };
 
-    overrides = pkgs.lib.foldr pkgs.lib.composeExtensions  (_: _: {}) [
+    overrides = with pkgs.haskell.lib; pkgs.lib.foldr pkgs.lib.composeExtensions  (_: _: {}) [
       (import hs-abci {}).overrides
       (self: super:
         let
@@ -52,7 +60,7 @@ in rp.project ({ pkgs, hackGet, ... }:
               inherit sha256;
             }) {};
 
-        in with pkgs.haskell.lib; {
+        in {
           pact = self.callCabal2nix "pact" pact {};
 
           # aeson 1.4.2
@@ -80,6 +88,11 @@ in rp.project ({ pkgs, hackGet, ... }:
           }));
         })
       (import (pact + /overrides.nix) pkgs)
+      (self: super: {
+        kadenamint = overrideCabal super.kadenamint (drv: {
+          executableSystemDepends = (drv.executableSystemDepends or []) ++ [ tendermint ];
+        });
+      })
     ];
   }
 )
