@@ -21,6 +21,7 @@ import Control.Monad.Reader                             (MonadReader(..), Reader
 import Control.Monad.State                              (MonadState(..), StateT(..), evalStateT, get, modify)
 import qualified Control.Monad.State.Strict as Strict
 import Data.Binary.Builder                              (toLazyByteString)
+import Data.Bool                                        (bool)
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
@@ -45,8 +46,8 @@ import qualified Data.ByteArray.HexString as Hex
 import Network.ABCI.Server                              (serveAppWith)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
 import Network.ABCI.Server.Middleware.RequestLogger     (mkLogStdout)
-import Network.ABCI.Types.Messages.Request              (CheckTx(..))
-import Network.ABCI.Types.Messages.Response             (_checkTxCode, _exceptionError)
+import Network.ABCI.Types.Messages.Request              (CheckTx(..), DeliverTx(..))
+import Network.ABCI.Types.Messages.Response             (_checkTxCode, _deliverTxCode, _exceptionError)
 import qualified Pact.Repl as Pact
 import qualified Pact.Repl.Types as Pact
 
@@ -239,29 +240,47 @@ app rs = App $ \case
   RequestInitChain _ -> pure def
   RequestQuery _ -> pure def
   RequestBeginBlock _ -> pure def
-  RequestCheckTx a -> check rs a
-  RequestDeliverTx _ -> pure def
+  RequestCheckTx (CheckTx hx) -> check rs hx
+  RequestDeliverTx (DeliverTx hx) -> deliver rs hx --runPact ResponseDeliverTx _deliverTxCode False rs a
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
 
-check :: MonadEffects m => Pact.ReplState -> CheckTx -> m (Response 'MTCheckTx)
-check rs (CheckTx x) = do
-  let accept msg = do
-        log msg
-        pure def
-      reject msg = do
-        log msg
-        pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
+check :: MonadEffects m => Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
+check = runPact accept reject True
+  where
+    accept msg = do
+      log msg
+      pure def
+    reject msg = do
+      log msg
+      pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
 
-  log $ "Decoding:\t" <> Hex.toText x
-  case decodeHexString x of
+deliver :: MonadEffects m => Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
+deliver = runPact accept reject False
+  where
+    accept msg = do
+      log msg
+      pure def
+    reject msg = do
+      log msg
+      pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
+
+runPact :: MonadEffects m => (Text -> m a) -> (Text -> m a) -> Bool -> Pact.ReplState -> HexString -> m a
+runPact accept reject shouldRollback rs hx = do
+  log $ "Decoding:\t" <> Hex.toText hx
+  case decodeHexString hx of
     Left err -> reject $ "Failed decode with error: " <> tshow err
     Right p -> do
       log $ "Decoded:\t" <> p
       case T.readMaybe (T.unpack p) of
         Nothing -> reject "Failed to parse transaction"
         Just (PactTransaction _ code) -> do
-          liftIO (Strict.evalStateT (Pact.evalRepl' $ T.unpack code) rs) >>= \case
+          let code' = mconcat
+                [ "(begin-tx)"
+                , code
+                , bool "(commit-tx)" "(rollback-tx)" shouldRollback
+                ]
+          liftIO (Strict.evalStateT (Pact.evalRepl' $ T.unpack code') rs) >>= \case
             Left err -> reject $ "Pact error:\n  " <> T.pack err
             Right r -> accept $ "Pact result:\n  " <> T.strip (tshow r)
 
