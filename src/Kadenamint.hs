@@ -59,9 +59,9 @@ data Actor
 
 runEverything :: IO ()
 runEverything =
-  withAsync (runActor Actor_Node) $ \_ ->
-    withAsync (runActor Actor_Broadcast) $ \_ ->
-      runABCI
+  withAsync (runActor nodeEnv Actor_Node) $ \_ ->
+    withAsync (runActor broadcastEnv Actor_Broadcast) $ \_ ->
+      runABCI abciEnv
 
 timelineEntries :: [(Int, Actor, StateT Int (ReaderT Env IO) ())]
 timelineEntries =
@@ -83,8 +83,8 @@ timelineEntries =
     , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(+ 1 (* a 3))")
     ]
 
-runActor :: Actor -> IO ()
-runActor actor = flip runReaderT broadcastEnv $ flip evalStateT 0 $
+runActor :: Env -> Actor -> IO ()
+runActor env actor = flip runReaderT env $ flip evalStateT 0 $
   for_ timelineEntries $ \(entryDelay, entryActor, entryAction) ->
     when (actor == entryActor) $ do
       liftIO $ threadDelay entryDelay
@@ -116,14 +116,14 @@ broadcastTransaction t = do
       log $ "Broadcasting at:\t" <> url
       shelly $ silently $ run_ "curl" [url]
 
-runABCI :: IO ()
-runABCI = do
+runABCI :: Env -> IO ()
+runABCI env = do
   _logger <- mkLogStdout -- too noisy
   serveAppWith (mkServerSettings defaultABCIAppHostPort) mempty $ transformApp transformHandler app
     where
       transformHandler :: EffectsT (Response t) -> IO (Response t)
       transformHandler er = do
-        x <- runExceptT $ runReaderT er abciEnv
+        x <- runExceptT $ runReaderT er env
         case x of
           Right r -> pure r
           Left l -> pure $ ResponseException $ def
