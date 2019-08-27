@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumDecimals #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -18,6 +19,7 @@ import Control.Monad.Except                             (MonadError(..), ExceptT
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), asks, runReaderT)
 import Control.Monad.State                              (MonadState(..), StateT(..), evalStateT, get, modify)
+import qualified Control.Monad.State.Strict as Strict
 import Data.Binary.Builder                              (toLazyByteString)
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
 import Data.Colour.SRGB                                 (Colour, sRGB24)
@@ -25,6 +27,7 @@ import Data.Conduit.Network                             (HostPreference, ServerS
 import Data.Default                                     (Default(..))
 import Data.Foldable                                    (for_)
 import Data.String                                      (IsString)
+import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -77,11 +80,52 @@ timelineEntries =
   in
     [ (seconds 0, Actor_Node, resetNetwork)
     , (seconds 0, Actor_Node, launchNode)
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "0")
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "0")
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "[1, (+ 2 3)]")
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(+ 1 (* a 3))")
+
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction greetWorld)
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(greet-world.set-message \"hello\")")
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(greet-world.greet)")
     ]
+
+greetWorld :: Text
+greetWorld = [here|
+(module greet-world MODULE_ADMIN
+  "A smart contract to greet the world."
+
+  ; no-op module admin for example purposes.
+  ; in a real contract this could enforce a keyset, or
+  ; tally votes, etc.
+  (defcap MODULE_ADMIN () true)
+
+  (defschema message-schema
+    @doc "Message schema"
+    @model [(invariant (!= msg ""))]
+
+    msg:string)
+
+  (deftable
+    message:{message-schema})
+
+  (defun set-message
+    (
+      m:string
+    )
+    "Set the message that will be used next"
+    ; uncomment the following to make the model happy!
+    ; (enforce (!= m "") "set-message: must not be empty")
+    (write message "0" {"msg": m})
+  )
+
+  (defun greet ()
+    "Do the hello-world dance"
+    (with-default-read message "0" { "msg": "" } { "msg":= msg }
+      (format "Hello {}!" [msg])))
+)
+
+(create-table message)
+
+(set-message "world")
+(greet)
+|]
 
 runActor :: Env -> Actor -> IO ()
 runActor env actor = flip runReaderT env $ flip evalStateT 0 $
@@ -97,14 +141,14 @@ data PactTransaction = PactTransaction
 
 broadcastPactTransaction :: ActorEffects m => Text -> m ()
 broadcastPactTransaction code = do
-  log $ "Broadcasting pact code:\t" <> code
+  log $ "Broadcasting pact code:\n  " <> code
   nonce <- get
   modify (+1)
   broadcastTransaction $ tshow $ PactTransaction nonce code
 
 broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> m ()
 broadcastTransaction t = do
-  log $ "Broadcasting transaction:\t" <> t
+  log $ "Broadcasting transaction:\n  " <> t
   let txHex = "0x" <> convertToBase Base16 (T.encodeUtf8 t)
   case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just txHex)] of
     Left err -> do
@@ -118,19 +162,22 @@ broadcastTransaction t = do
 
 runABCI :: Env -> IO ()
 runABCI env = do
+  rs <- Pact.initReplState Pact.StringEval Nothing
   _logger <- mkLogStdout -- too noisy
-  serveAppWith (mkServerSettings defaultABCIAppHostPort) mempty $ transformApp transformHandler app
-    where
-      transformHandler :: EffectsT (Response t) -> IO (Response t)
-      transformHandler er = do
-        x <- runExceptT $ runReaderT er env
-        case x of
-          Right r -> pure r
-          Left l -> pure $ ResponseException $ def
-            & _exceptionError .~ l
+
+  let
+    transformHandler :: EffectsT (Response t) -> IO (Response t)
+    transformHandler er = do
+      x <- runExceptT $ runReaderT er env
+      case x of
+        Right r -> pure r
+        Left l -> pure $ ResponseException $ def
+          & _exceptionError .~ l
+
+  serveAppWith (mkServerSettings defaultABCIAppHostPort) mempty $ transformApp transformHandler $ app rs
 
 {- Env -}
-newtype Env = Env
+data Env = Env
   { _env_printer :: Text -> Text
   }
 
@@ -183,8 +230,8 @@ type Err = Text
 type EffectsT = ReaderT Env (ExceptT Err IO)
 type MonadEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
-app :: App EffectsT
-app = App $ \case
+app :: Pact.ReplState -> App EffectsT
+app rs = App $ \case
   RequestEcho _ -> pure def
   RequestFlush _ -> pure def
   RequestInfo _ -> pure def
@@ -192,13 +239,13 @@ app = App $ \case
   RequestInitChain _ -> pure def
   RequestQuery _ -> pure def
   RequestBeginBlock _ -> pure def
-  RequestCheckTx a -> check a
+  RequestCheckTx a -> check rs a
   RequestDeliverTx _ -> pure def
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
 
-check :: MonadEffects m => CheckTx -> m (Response 'MTCheckTx)
-check (CheckTx x) = do
+check :: MonadEffects m => Pact.ReplState -> CheckTx -> m (Response 'MTCheckTx)
+check rs (CheckTx x) = do
   let accept msg = do
         log msg
         pure def
@@ -214,9 +261,10 @@ check (CheckTx x) = do
       case T.readMaybe (T.unpack p) of
         Nothing -> reject "Failed to parse transaction"
         Just (PactTransaction _ code) -> do
-          liftIO (Pact.evalRepl Pact.StringEval $ T.unpack code) >>= \case
-            Left err -> reject $ "Pact error:\n" <> T.pack err
-            Right r -> accept $ "Pact result:\n" <> T.strip (tshow r)
+          liftIO (Strict.evalStateT (Pact.evalRepl' $ T.unpack code) rs) >>= \case
+            Left err -> reject $ "Pact error:\n  " <> T.pack err
+            Right r -> accept $ "Pact result:\n  " <> T.strip (tshow r)
+
 
 {- Utils -}
 type HostPort a = IsString a => (a, Int)
