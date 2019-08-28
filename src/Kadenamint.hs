@@ -241,7 +241,7 @@ app rs = App $ \case
   RequestQuery _ -> pure def
   RequestBeginBlock _ -> pure def
   RequestCheckTx (CheckTx hx) -> check rs hx
-  RequestDeliverTx (DeliverTx hx) -> deliver rs hx --runPact ResponseDeliverTx _deliverTxCode False rs a
+  RequestDeliverTx (DeliverTx hx) -> deliver rs hx
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
 
