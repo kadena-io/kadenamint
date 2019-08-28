@@ -42,7 +42,6 @@ import Text.Read as T                                   (readMaybe)
 import Prelude                                          hiding (log)
 
 import Data.ByteArray.HexString                         (HexString(..))
-import qualified Data.ByteArray.HexString as Hex
 import Network.ABCI.Server                              (serveAppWith)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
 import Network.ABCI.Server.Middleware.RequestLogger     (mkLogStdout)
@@ -77,7 +76,7 @@ timelineEntries =
     resetNetwork = do
       shelly deleteNetwork
       shelly initNetwork
-      log "Node has been reset"
+      log "Node has been reset" Nothing
   in
     [ (seconds 0, Actor_Node, resetNetwork)
     , (seconds 0, Actor_Node, launchNode)
@@ -121,9 +120,7 @@ greetWorld = [here|
     (with-default-read message "0" { "msg": "" } { "msg":= msg }
       (format "Hello {}!" [msg])))
 )
-
 (create-table message)
-
 (set-message "world")
 (greet)
 |]
@@ -142,23 +139,21 @@ data PactTransaction = PactTransaction
 
 broadcastPactTransaction :: ActorEffects m => Text -> m ()
 broadcastPactTransaction code = do
-  log $ "Broadcasting pact code:\n  " <> code
+  log "Broadcasting pact code" (Just code)
   nonce <- get
   modify (+1)
   broadcastTransaction $ tshow $ PactTransaction nonce code
 
 broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> m ()
 broadcastTransaction t = do
-  log $ "Broadcasting transaction:\n  " <> t
   let txHex = "0x" <> convertToBase Base16 (T.encodeUtf8 t)
   case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just txHex)] of
     Left err -> do
-      log "Failed encoding of transaction with error:"
-      log $ tshow err
+      log "Failed encoding of transaction with error" (Just $ tshow err)
       fatal
     Right pathAndQuery -> do
       let url = mkAddress defaultTendermintRPCHostPort <> pathAndQuery
-      log $ "Broadcasting at:\t" <> url
+      log "Broadcasting at" (Just url)
       shelly $ silently $ run_ "curl" [url]
 
 runABCI :: Env -> IO ()
@@ -189,13 +184,13 @@ cyan  = sRGB24 0 0xFF 0xFF
 
 broadcastEnv, nodeEnv, abciEnv :: Env
 broadcastEnv = Env
-  { _env_printer = sgrify [SetRGBColor Foreground cyan]
+  { _env_printer = sgrify [SetRGBColor Foreground cyan] . ("\n[RPC] " <>)
   }
 nodeEnv = Env
-  { _env_printer = sgrify [SetRGBColor Foreground red]
+  { _env_printer = sgrify [SetRGBColor Foreground red] . ("\n[NODE] " <>)
   }
 abciEnv = Env
-  { _env_printer = sgrify [SetRGBColor Foreground green]
+  { _env_printer = sgrify [SetRGBColor Foreground green] . ("\n[ABCI] " <>)
   }
 
 {- Tendermint -}
@@ -248,41 +243,43 @@ app rs = App $ \case
 check :: MonadEffects m => Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
 check = runPact accept reject True
   where
-    accept msg = do
-      log msg
-      pure def
-    reject msg = do
-      log msg
-      pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
+    accept = pure def
+    reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
 
 deliver :: MonadEffects m => Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
 deliver = runPact accept reject False
   where
-    accept msg = do
-      log msg
-      pure def
-    reject msg = do
-      log msg
-      pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
+    accept = pure def
+    reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
 
-runPact :: MonadEffects m => (Text -> m a) -> (Text -> m a) -> Bool -> Pact.ReplState -> HexString -> m a
+runPact :: MonadEffects m => m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
 runPact accept reject shouldRollback rs hx = do
-  log $ "Decoding:\t" <> Hex.toText hx
   case decodeHexString hx of
-    Left err -> reject $ "Failed decode with error: " <> tshow err
+    Left err -> do
+      log "Failed decode with error" (Just $ tshow err)
+      reject
     Right p -> do
-      log $ "Decoded:\t" <> p
+      if shouldRollback
+        then log "Checking" (Just p)
+        else log "Delivering" Nothing
+
       case T.readMaybe (T.unpack p) of
-        Nothing -> reject "Failed to parse transaction"
+        Nothing -> do
+          log "Failed to parse transaction" Nothing
+          reject
         Just (PactTransaction _ code) -> do
-          let code' = mconcat
+          let codeTx = mconcat
                 [ "(begin-tx)"
                 , code
                 , bool "(commit-tx)" "(rollback-tx)" shouldRollback
                 ]
-          liftIO (Strict.evalStateT (Pact.evalRepl' $ T.unpack code') rs) >>= \case
-            Left err -> reject $ "Pact error:\n  " <> T.pack err
-            Right r -> accept $ "Pact result:\n  " <> T.strip (tshow r)
+          liftIO (Strict.evalStateT (Pact.evalRepl' $ T.unpack codeTx) rs) >>= \case
+            Left err -> do
+              log "Pact error" (Just $ T.pack err)
+              reject
+            Right r -> do
+              log "Pact result" (Just $ T.strip $ tshow r)
+              accept
 
 
 {- Utils -}
@@ -297,10 +294,10 @@ mkServerSettings (host, port) = serverSettings port host
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
-log :: (MonadIO m, MonadReader Env m) => Text -> m ()
-log txt = do
+log :: (MonadIO m, MonadReader Env m) => Text -> Maybe Text -> m ()
+log header body = do
   p <- asks _env_printer
-  liftIO $ putStrLn $ T.unpack $ p txt
+  liftIO $ putStrLn $ T.unpack $ p $ header <> maybe "" (":\n" <>) body
 
 sgrify :: [SGR] -> Text -> Text
 sgrify codes txt = mconcat
