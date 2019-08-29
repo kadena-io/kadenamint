@@ -13,7 +13,7 @@ module Kadenamint where
 
 import Control.Concurrent                               (threadDelay)
 import Control.Concurrent.Async                         (withAsync)
-import Control.Lens                                     (strict, view, (&), (.~))
+import Control.Lens                                     (strict, view, _2, (&), (.~), (+~))
 import Control.Monad                                    (when)
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), runExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
@@ -56,34 +56,44 @@ import System.Which
 type ActorEffects m = (MonadIO m, MonadReader Env m, MonadState Int m)
 
 data Actor
-  = Actor_Node
+  = Actor_Node Int
   | Actor_Broadcast
-  deriving (Eq, Ord, Enum, Bounded, Show)
+  deriving (Eq, Ord, Show)
 
 runEverything :: IO ()
-runEverything =
-  withAsync (runActor nodeEnv Actor_Node) $ \_ ->
-    withAsync (runActor broadcastEnv Actor_Broadcast) $ \_ ->
-      runABCI abciEnv
+runEverything = let n = mkNodeConfig in
+  withAsync (runActor nodeEnv $ Actor_Node 0) $ \_ ->
+    withAsync (runActor nodeEnv $ Actor_Node 1) $ \_ ->
+      withAsync (runABCI (n 0) abciEnv) $ \_ ->
+        withAsync (runABCI (n 1) abciEnv) $ \_ ->
+          runActor broadcastEnv Actor_Broadcast
 
 timelineEntries :: [(Int, Actor, StateT Int (ReaderT Env IO) ())]
 timelineEntries =
   let
-    deleteNetwork = run_ "rm" ["-rf", tendermintHome]
-    initNetwork = tendermint "init" []
+    deleteNetwork cfg = run_ "rm" ["-rf", _nodeConfig_home cfg]
+    initNetwork cfg = tendermint cfg "init" []
 
-    launchNode = shelly tendermintNode
-    resetNetwork = do
-      shelly deleteNetwork
-      shelly initNetwork
-      log "Node has been reset" Nothing
+    launchNode cfg = shelly $ tendermintNode cfg
+    resetNetwork cfg = do
+      shelly $ deleteNetwork cfg
+      shelly $ initNetwork cfg
+      log ("Node " <> tshow (_nodeConfig_index cfg) <> " has been reset") Nothing
+
+    n = mkNodeConfig
   in
-    [ (seconds 0, Actor_Node, resetNetwork)
-    , (seconds 0, Actor_Node, launchNode)
+    [ (seconds 0, Actor_Node 0, resetNetwork $ n 0)
+    , (seconds 0, Actor_Node 0, launchNode $ n 0)
+    , (seconds 0, Actor_Node 1, resetNetwork $ n 1)
+    , (seconds 0, Actor_Node 1, launchNode $ n 1)
 
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction greetWorld)
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(greet-world.set-message \"hello\")")
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction "(greet-world.greet)")
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 0) greetWorld)
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 0) "(greet-world.set-message \"hello\")")
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 0) "(greet-world.greet)")
+
+    , (seconds 5, Actor_Broadcast, broadcastPactTransaction (n 1) greetWorld)
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 1) "(greet-world.set-message \"hello\")")
+    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 1) "(greet-world.greet)")
     ]
 
 greetWorld :: Text
@@ -137,27 +147,27 @@ data PactTransaction = PactTransaction
   , _pactTransaction_code  :: Text
   } deriving (Eq, Ord, Read, Show)
 
-broadcastPactTransaction :: ActorEffects m => Text -> m ()
-broadcastPactTransaction code = do
-  log "Broadcasting pact code" (Just code)
+broadcastPactTransaction :: ActorEffects m => NodeConfig -> Text -> m ()
+broadcastPactTransaction cfg code = do
+  log ("Broadcasting pact code to node #" <> tshow (_nodeConfig_index cfg) <> " at " <> _nodeConfig_rpc cfg) (Just code)
   nonce <- get
   modify (+1)
-  broadcastTransaction $ tshow $ PactTransaction nonce code
+  broadcastTransaction cfg $ tshow $ PactTransaction nonce code
 
-broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> m ()
-broadcastTransaction t = do
+broadcastTransaction :: (MonadIO m, MonadReader Env m) => NodeConfig -> Text -> m ()
+broadcastTransaction cfg t = do
   let txHex = "0x" <> convertToBase Base16 (T.encodeUtf8 t)
   case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just txHex)] of
     Left err -> do
       log "Failed encoding of transaction with error" (Just $ tshow err)
       fatal
     Right pathAndQuery -> do
-      let url = mkAddress defaultTendermintRPCHostPort <> pathAndQuery
+      let url = _nodeConfig_rpc cfg <> pathAndQuery
       log "Broadcasting at" (Just url)
       shelly $ silently $ run_ "curl" [url]
 
-runABCI :: Env -> IO ()
-runABCI env = do
+runABCI :: NodeConfig -> Env -> IO ()
+runABCI cfg env = do
   rs <- Pact.initReplState Pact.StringEval Nothing
   _logger <- mkLogStdout -- too noisy
 
@@ -170,7 +180,9 @@ runABCI env = do
         Left l -> pure $ ResponseException $ def
           & _exceptionError .~ l
 
-  serveAppWith (mkServerSettings defaultABCIAppHostPort) mempty $ transformApp transformHandler $ app rs
+  serveAppWith (mkServerSettings $ _nodeConfig_app cfg) mempty
+    $ transformApp transformHandler
+    $ app rs
 
 {- Env -}
 data Env = Env
@@ -194,23 +206,41 @@ abciEnv = Env
   }
 
 {- Tendermint -}
+type Address = Text
+
+data NodeConfig = NodeConfig
+  { _nodeConfig_index :: Int
+  , _nodeConfig_home :: Text
+  , _nodeConfig_app :: forall a. IsString a => (a, Int)
+  , _nodeConfig_p2p :: Address
+  , _nodeConfig_rpc :: Address
+  }
+
+mkNodeConfig :: Int -> NodeConfig
+mkNodeConfig i =
+  let portOffset = 10 * i
+  in NodeConfig
+     { _nodeConfig_index = i
+     , _nodeConfig_home = "./.tendermint-" <> tshow i
+     , _nodeConfig_app = defaultABCIAppHostPort & _2 +~ portOffset
+     , _nodeConfig_p2p = mkAddress $ defaultTendermintP2PHostPort & _2 +~ portOffset
+     , _nodeConfig_rpc = mkAddress $ defaultTendermintRPCHostPort & _2 +~ portOffset
+     }
+
 tendermintPath :: Sh.FilePath
 tendermintPath = Sh.fromText $ T.pack $(staticWhich "tendermint")
 
-tendermint :: Text -> [Text] -> Sh ()
-tendermint tmCmd cmdArgs = run_ tendermintPath $ tmArgs <> [tmCmd] <> cmdArgs
+tendermint :: NodeConfig -> Text -> [Text] -> Sh ()
+tendermint cfg tmCmd cmdArgs = run_ tendermintPath $ tmArgs <> [tmCmd] <> cmdArgs
   where
-    tmArgs = ["--home", tendermintHome]
+    tmArgs = ["--home", _nodeConfig_home cfg]
 
-tendermintNode :: Sh ()
-tendermintNode = tendermint "node"
-  [ "--p2p.laddr", mkAddress defaultTendermintP2PHostPort
-  , "--rpc.laddr", "tcp://" <> mkAddress defaultTendermintRPCHostPort & _UPSTREAM_ "incoherent with other address flags"
-  , "--proxy_app", mkAddress defaultABCIAppHostPort
+tendermintNode :: NodeConfig -> Sh ()
+tendermintNode cfg = tendermint cfg "node"
+  [ "--p2p.laddr", _nodeConfig_p2p cfg
+  , "--rpc.laddr", _nodeConfig_rpc cfg & _UPSTREAM_ "incoherent with other address flags" ("tcp://" <>)
+  , "--proxy_app", mkAddress $ _nodeConfig_app cfg
   ]
-
-tendermintHome :: IsString a => a
-tendermintHome = "./.tendermint"
 
 defaultTendermintP2PHostPort :: (Text, Int)
 defaultTendermintP2PHostPort = ("0.0.0.0", 26656)
