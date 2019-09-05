@@ -78,26 +78,19 @@ runEverything = do
 
     networkNodes = [0..networkSize-1]
 
-    g = mkGlobalFlags
-
   resetNetwork
 
   peers <- flip runReaderT nodeEnv $ do
     for networkNodes $ \i -> do
-      ni <- shelly $ silently $ tendermintNodeId $ g i
+      ni <- shelly $ silently $ tendermintNodeId $ mkGlobalFlags i
       pure (i, T.strip ni)
 
   let
-    n = mkNodeFlags peers
-
-    go i f = flip runReaderT (nodeEnv i) $ do
-      liftIO $ threadDelay $ seconds i
-      f
-
-    launchNode i = withAsync (runABCI i (n i)) $ \_ -> do
-      go i $ do
+    launchNode i = withAsync (runABCI i) $ \_ -> do
+      flip runReaderT (nodeEnv i) $ do
+        liftIO $ threadDelay $ seconds i
         log ("Node " <> tshow i <> " will be launched") Nothing
-        void $ shelly $ tendermintNode (mkGlobalFlags i) (n i)
+        void $ shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags peers i)
         log ("Node " <> tshow i <> " has been launched") Nothing
 
   withAsync (runActor broadcastEnv Actor_Broadcast ) $ \_ -> do
@@ -187,8 +180,8 @@ broadcastTransaction addr t = do
       log "Broadcasting at" (Just url)
       shelly $ silently $ run_ "curl" [url]
 
-runABCI :: Int -> NodeFlags -> IO ()
-runABCI nid nf = do
+runABCI :: Int -> IO ()
+runABCI nid = do
   rs <- Pact.initReplState Pact.StringEval Nothing
   _logger <- mkLogStdout -- too noisy
 
@@ -203,7 +196,7 @@ runABCI nid nf = do
         Left l -> pure $ ResponseException $ def
           & _exceptionError .~ l
 
-  serveAppWith (mkServerSettings $ _nodeFlags_app nf) mempty
+  serveAppWith (mkServerSettings $ mkABCIHostPort nid) mempty
     $ transformApp transformHandler
     $ app nid rs
 
