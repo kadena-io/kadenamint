@@ -15,8 +15,8 @@ module Kadenamint where
 import Control.Concurrent                               (threadDelay)
 import Control.Concurrent.Async                         (withAsync)
 import Control.Lens                                     (strict, view, _2, (&), (.~), (+~))
-import Control.Monad                                    (when)
-import Control.Monad.Except                             (MonadError(..), ExceptT(..), runExceptT)
+import Control.Monad                                    (when, (<=<))
+import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), asks, runReaderT)
 import Control.Monad.State                              (MonadState(..), StateT(..), evalStateT, get, modify)
@@ -354,34 +354,36 @@ deliver nid = runPact nid accept reject False
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
 
 runPact :: MonadEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
-runPact _nid accept reject shouldRollback rs hx = do
-  case decodeHexString hx of
-    Left err -> do
-      log "Failed decode with error" (Just $ tshow err)
-      reject
-    Right p -> do
-      if shouldRollback
-        then log "Checking" (Just p)
-        else log "Delivering" Nothing
+runPact _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $ do
+  p <- decode hx
+  if shouldRollback
+    then log "Checking" (Just p)
+    else log "Delivering" Nothing
 
-      case T.readMaybe (T.unpack p) of
-        Nothing -> do
-          log "Failed to parse transaction" Nothing
-          reject
-        Just (PactTransaction _ code) -> do
-          let codeTx = mconcat
-                [ "(begin-tx)"
-                , code
-                , bool "(commit-tx)" "(rollback-tx)" shouldRollback
-                ]
-          liftIO (Strict.evalStateT (Pact.evalRepl' $ T.unpack codeTx) rs) >>= \case
-            Left err -> do
-              log "Pact error" (Just $ T.pack err)
-              reject
-            Right r -> do
-              log "Pact result" (Just $ T.strip $ tshow r)
-              accept
+  code <- parse p
+  let codeTx = mconcat
+        [ "(begin-tx)"
+        , code
+        , bool "(commit-tx)" "(rollback-tx)" shouldRollback
+        ]
 
+  r <- eval codeTx
+  log "Pact result" (Just $ T.strip $ tshow r)
+
+  where
+    decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
+      . liftEither . decodeHexString
+
+    parse p = liftEither $ case T.readMaybe (T.unpack p) of
+      Nothing -> Left ("Failed to parse transaction", Nothing)
+      Just (PactTransaction _ code) -> Right code
+
+    eval code = withExceptT (\err -> ("Pact error", Just $ T.pack err))
+      $ liftIO (Strict.evalStateT (Pact.evalRepl' $ T.unpack code) rs)
+
+    rejectOnError = \case
+      Left (h,b) -> log h b *> reject
+      Right _ -> accept
 
 {- Utils -}
 type HostPort a = IsString a => (a, Int)
