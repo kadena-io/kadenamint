@@ -248,6 +248,7 @@ data NodeFlags = NodeFlags
   , _nodeFlags_p2p :: Address
   , _nodeFlags_rpc :: Address
   , _nodeFlags_peers :: [Peer]
+  , _nodeFlags_emptyBlocks :: Bool
   }
 
 mkNetworkFlags :: NetworkFlags
@@ -279,6 +280,7 @@ mkNodeFlags peers i = NodeFlags
   , _nodeFlags_p2p = mkP2PAddress i
   , _nodeFlags_rpc = mkRPCAddress i
   , _nodeFlags_peers = flip fmap peers $ \(i', pid) -> (pid, mkP2PAddress i')
+  , _nodeFlags_emptyBlocks = False
   }
 
 tendermintPath :: Sh.FilePath
@@ -305,6 +307,7 @@ tendermintNode gf nf = tendermint gf "node"
       , "@"
       , addr
       ]
+  , "--consensus.create_empty_blocks" <> _UPSTREAM_ "incoherent with other args" "=" <> tshow (_nodeFlags_emptyBlocks nf)
   ]
 
 tendermintNodeId :: GlobalFlags -> Sh Text
