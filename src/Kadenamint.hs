@@ -13,7 +13,7 @@
 module Kadenamint where
 
 import Control.Concurrent                               (threadDelay)
-import Control.Concurrent.Async                         (withAsync)
+import Control.Concurrent.Async                         (forConcurrently_, withAsync)
 import Control.Lens                                     (strict, view, _2, (&), (.~), (+~))
 import Control.Monad                                    (when, (<=<))
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
@@ -35,6 +35,7 @@ import Data.Text                                        (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
+import Data.Traversable                                 (for)
 import Network.HTTP.Types                               (encodePath)
 import Shelly                                           (Sh, shelly, silently, run, run_)
 import qualified Shelly as Sh
@@ -62,6 +63,9 @@ data Actor
   | Actor_Broadcast
   deriving (Eq, Ord, Show)
 
+networkSize :: Int
+networkSize = 3
+
 runEverything :: IO ()
 runEverything = do
   let
@@ -72,14 +76,16 @@ runEverything = do
       shelly $ tendermintNetwork mkNetworkFlags
       --log ("Network has been reset") Nothing
 
+    networkNodes = [0..networkSize-1]
+
     g = mkGlobalFlags
 
   resetNetwork
 
   peers <- flip runReaderT nodeEnv $ do
-    n0 <- shelly $ silently $ tendermintNodeId (g 0)
-    n1 <- shelly $ silently $ tendermintNodeId (g 1)
-    pure [(0, T.strip n0), (1, T.strip n1)]
+    for networkNodes $ \i -> do
+      ni <- shelly $ silently $ tendermintNodeId $ g i
+      pure (i, T.strip ni)
 
   let
     n = mkNodeFlags peers
@@ -94,14 +100,13 @@ runEverything = do
         void $ shelly $ tendermintNode (mkGlobalFlags i) (n i)
         log ("Node " <> tshow i <> " has been launched") Nothing
 
-  withAsync (runActor broadcastEnv Actor_Broadcast) $ \_ ->
-    withAsync (launchNode 0) $ \_ ->
-      launchNode 1
+  withAsync (runActor broadcastEnv Actor_Broadcast ) $ \_ -> do
+    forConcurrently_ networkNodes launchNode
 
 timelineEntries :: [(Int, Actor, StateT Int (ReaderT Env IO) ())]
 timelineEntries =
     [ (seconds 3, Actor_Broadcast, broadcastPactTransaction 0 greetWorld)
-    , (seconds 2, Actor_Broadcast, broadcastPactTransaction 0 "(greet-world.set-message \"hello\")")
+    , (seconds 2, Actor_Broadcast, broadcastPactTransaction 1 "(greet-world.set-message \"hello\")")
     , (seconds 2, Actor_Broadcast, broadcastPactTransaction 0 "(greet-world.greet)")
     ]
 
@@ -252,7 +257,7 @@ data NodeFlags = NodeFlags
 
 mkNetworkFlags :: NetworkFlags
 mkNetworkFlags = NetworkFlags
-  { _networkFlags_validators    = 2
+  { _networkFlags_validators    = networkSize
   , _networkFlags_output        = "./.tendermint"
   , _networkFlags_populatePeers = True
   }
