@@ -84,20 +84,19 @@ runEverything = do
   let
     n = mkNodeFlags peers
 
-    launchNode i = void $ do
-      log ("Node " <> tshow i <> " will be launched") Nothing
-      void $ shelly $ tendermintNode (mkGlobalFlags i) (n i)
-      log ("Node " <> tshow i <> " has been launched") Nothing
-
     go i f = flip runReaderT (nodeEnv i) $ do
       liftIO $ threadDelay $ seconds i
       f
 
+    launchNode i = withAsync (runABCI i (n i)) $ \_ -> do
+      go i $ do
+        log ("Node " <> tshow i <> " will be launched") Nothing
+        void $ shelly $ tendermintNode (mkGlobalFlags i) (n i)
+        log ("Node " <> tshow i <> " has been launched") Nothing
+
   withAsync (runActor broadcastEnv Actor_Broadcast) $ \_ ->
-    withAsync (go 0 $ launchNode 0) $ \_ ->
-      withAsync (go 1 $ launchNode 1) $ \_ ->
-        withAsync (runABCI 0 (n 0)) $ \_ ->
-          runABCI 1 (n 1)
+    withAsync (launchNode 0) $ \_ ->
+      launchNode 1
 
 timelineEntries :: [(Int, Actor, StateT Int (ReaderT Env IO) ())]
 timelineEntries =
