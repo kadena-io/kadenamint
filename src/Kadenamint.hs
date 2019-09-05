@@ -379,7 +379,7 @@ runPact _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $
       Just (PactTransaction _ code) -> Right code
 
     eval code = withExceptT (\err -> ("Pact error", Just $ T.pack err))
-      $ liftIO (Strict.evalStateT (Pact.evalRepl' $ T.unpack code) rs)
+      $ ExceptT $ liftIO $ (Strict.evalStateT (Pact.evalRepl' $ T.unpack code) rs)
 
     rejectOnError = \case
       Left (h,b) -> log h b *> reject
