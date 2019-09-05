@@ -66,6 +66,30 @@ data Actor
 networkSize :: Int
 networkSize = 3
 
+newtype Env = Env
+  { _env_printer :: Text -> Text
+  }
+
+red, green, cyan :: Colour Float
+red   = sRGB24 0xFF 0 0
+green = sRGB24 0 0xFF 0
+cyan  = sRGB24 0 0xFF 0xFF
+
+broadcastEnv :: Env
+broadcastEnv = Env
+  { _env_printer = sgrify [SetRGBColor Foreground cyan] . ("\n[RPC] " <>)
+  }
+
+nodeEnv, abciEnv :: Int -> Env
+nodeEnv nid = Env
+  { _env_printer = \x ->
+      sgrify [SetRGBColor Foreground red] $ "\n[NODE] Node: " <> tshow nid <> " " <> x
+  }
+abciEnv nid = Env
+  { _env_printer = \x ->
+      sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " " <> x
+  }
+
 runEverything :: IO ()
 runEverything = do
   let
@@ -109,45 +133,6 @@ timelineRepl =
   , (seconds 2, Actor_Broadcast, broadcastPactTransaction 1 "(+ 2 3)")
   ]
 
-greetWorld :: Text
-greetWorld = [here|
-(module greet-world MODULE_ADMIN
-  "A smart contract to greet the world."
-
-  ; no-op module admin for example purposes.
-  ; in a real contract this could enforce a keyset, or
-  ; tally votes, etc.
-  (defcap MODULE_ADMIN () true)
-
-  (defschema message-schema
-    @doc "Message schema"
-    @model [(invariant (!= msg ""))]
-
-    msg:string)
-
-  (deftable
-    message:{message-schema})
-
-  (defun set-message
-    (
-      m:string
-    )
-    "Set the message that will be used next"
-    ; uncomment the following to make the model happy!
-    ; (enforce (!= m "") "set-message: must not be empty")
-    (write message "0" {"msg": m})
-  )
-
-  (defun greet ()
-    "Do the hello-world dance"
-    (with-default-read message "0" { "msg": "" } { "msg":= msg }
-      (format "Hello {}!" [msg])))
-)
-(create-table message)
-(set-message "world")
-(greet)
-|]
-
 runActor :: Env -> Actor -> IO ()
 runActor env actor = flip runReaderT env $ flip evalStateT 0 $
   for_ timelineEntries $ \(entryDelay, entryActor, entryAction) ->
@@ -155,6 +140,7 @@ runActor env actor = flip runReaderT env $ flip evalStateT 0 $
       liftIO $ threadDelay entryDelay
       entryAction
 
+{- Tendermint RPC -}
 data PactTransaction = PactTransaction
   { _pactTransaction_nonce :: Int
   , _pactTransaction_code  :: Text
@@ -180,52 +166,7 @@ broadcastTransaction addr t = do
       log "Broadcasting at" (Just url)
       shelly $ silently $ run_ "curl" [url]
 
-runABCI :: Int -> IO ()
-runABCI nid = do
-  rs <- Pact.initReplState Pact.StringEval Nothing
-  _logger <- mkLogStdout -- too noisy
-
-  let
-    env = abciEnv nid
-
-    transformHandler :: EffectsT (Response t) -> IO (Response t)
-    transformHandler er = do
-      x <- runExceptT $ runReaderT er env
-      case x of
-        Right r -> pure r
-        Left l -> pure $ ResponseException $ def
-          & _exceptionError .~ l
-
-  serveAppWith (mkServerSettings $ mkABCIHostPort nid) mempty
-    $ transformApp transformHandler
-    $ app nid rs
-
-{- Env -}
-newtype Env = Env
-  { _env_printer :: Text -> Text
-  }
-
-red, green, cyan :: Colour Float
-red   = sRGB24 0xFF 0 0
-green = sRGB24 0 0xFF 0
-cyan  = sRGB24 0 0xFF 0xFF
-
-broadcastEnv :: Env
-broadcastEnv = Env
-  { _env_printer = sgrify [SetRGBColor Foreground cyan] . ("\n[RPC] " <>)
-  }
-
-nodeEnv, abciEnv :: Int -> Env
-nodeEnv nid = Env
-  { _env_printer = \x ->
-      sgrify [SetRGBColor Foreground red] $ "\n[NODE] Node: " <> tshow nid <> " " <> x
-  }
-abciEnv nid = Env
-  { _env_printer = \x ->
-      sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " " <> x
-  }
-
-{- Tendermint -}
+{- Tendermint CLI -}
 type Address = Text
 type Peer = (Text, Address)
 
@@ -310,15 +251,36 @@ tendermintNode gf nf = tendermint gf "node"
 tendermintNodeId :: GlobalFlags -> Sh Text
 tendermintNodeId gf = tendermint gf "show_node_id" []
 
+{- Network addresses -}
 defaultTendermintP2PHostPort :: (Text, Int)
 defaultTendermintP2PHostPort = ("127.0.0.1", 26656)
 
 defaultTendermintRPCHostPort :: (Text, Int)
 defaultTendermintRPCHostPort = ("127.0.0.1", 26657)
 
-{- ABCI app -}
 defaultABCIAppHostPort :: IsString a => (a, Int)
 defaultABCIAppHostPort = ("127.0.0.1", 26658)
+
+{- ABCI app -}
+runABCI :: Int -> IO ()
+runABCI nid = do
+  rs <- Pact.initReplState Pact.StringEval Nothing
+  _logger <- mkLogStdout -- too noisy
+
+  let
+    env = abciEnv nid
+
+    transformHandler :: EffectsT (Response t) -> IO (Response t)
+    transformHandler er = do
+      x <- runExceptT $ runReaderT er env
+      case x of
+        Right r -> pure r
+        Left l -> pure $ ResponseException $ def
+          & _exceptionError .~ l
+
+  serveAppWith (mkServerSettings $ mkABCIHostPort nid) mempty
+    $ transformApp transformHandler
+    $ app nid rs
 
 type Err = Text
 type EffectsT = ReaderT Env (ExceptT Err IO)
@@ -424,3 +386,43 @@ _UPSTREAM_ _ = id
 
 _TODO_ :: Text -> a -> a
 _TODO_ _ = id
+
+{- Pact code samples -}
+greetWorld :: Text
+greetWorld = [here|
+(module greet-world MODULE_ADMIN
+  "A smart contract to greet the world."
+
+  ; no-op module admin for example purposes.
+  ; in a real contract this could enforce a keyset, or
+  ; tally votes, etc.
+  (defcap MODULE_ADMIN () true)
+
+  (defschema message-schema
+    @doc "Message schema"
+    @model [(invariant (!= msg ""))]
+
+    msg:string)
+
+  (deftable
+    message:{message-schema})
+
+  (defun set-message
+    (
+      m:string
+    )
+    "Set the message that will be used next"
+    ; uncomment the following to make the model happy!
+    ; (enforce (!= m "") "set-message: must not be empty")
+    (write message "0" {"msg": m})
+  )
+
+  (defun greet ()
+    "Do the hello-world dance"
+    (with-default-read message "0" { "msg": "" } { "msg":= msg }
+      (format "Hello {}!" [msg])))
+)
+(create-table message)
+(set-message "world")
+(greet)
+|]
