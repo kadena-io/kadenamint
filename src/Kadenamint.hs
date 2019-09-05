@@ -9,6 +9,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
+
 module Kadenamint where
 
 import Control.Concurrent                               (threadDelay)
@@ -27,6 +28,7 @@ import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
 import Data.Default                                     (Default(..))
 import Data.Foldable                                    (for_)
+import Data.Functor                                     (void)
 import Data.String                                      (IsString)
 import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
@@ -34,7 +36,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
 import Network.HTTP.Types                               (encodePath)
-import Shelly                                           (Sh, shelly, silently, run_)
+import Shelly                                           (Sh, shelly, silently, run, run_)
 import qualified Shelly as Sh
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..), setSGRCode)
 import Text.Read as T                                   (readMaybe)
@@ -61,40 +63,54 @@ data Actor
   deriving (Eq, Ord, Show)
 
 runEverything :: IO ()
-runEverything = let n = mkNodeConfig in
-  withAsync (runActor nodeEnv $ Actor_Node 0) $ \_ ->
-    withAsync (runActor nodeEnv $ Actor_Node 1) $ \_ ->
-      withAsync (runABCI (n 0) abciEnv) $ \_ ->
-        withAsync (runABCI (n 1) abciEnv) $ \_ ->
-          runActor broadcastEnv Actor_Broadcast
+runEverything = do
+  let
+    deleteNetwork = run_ "rm" ["-rf", _networkFlags_output mkNetworkFlags]
+
+    resetNetwork = void $ do
+      shelly deleteNetwork
+      shelly $ tendermintNetwork mkNetworkFlags
+      --log ("Network has been reset") Nothing
+
+    g = mkGlobalFlags
+
+  resetNetwork
+
+  peers <- flip runReaderT nodeEnv $ do
+    n0 <- shelly $ silently $ tendermintNodeId (g 0)
+    n1 <- shelly $ silently $ tendermintNodeId (g 1)
+    pure [(0, T.strip n0), (1, T.strip n1)]
+
+  let
+    n = mkNodeFlags peers
+
+    launchNode i = void $ do
+      log ("Node " <> tshow i <> " will be launched") Nothing
+      void $ shelly $ tendermintNode (mkGlobalFlags i) (n i)
+      log ("Node " <> tshow i <> " has been launched") Nothing
+
+    go i f = flip runReaderT (nodeEnv i) $ do
+      liftIO $ threadDelay $ seconds i
+      f
+
+  withAsync (runActor broadcastEnv Actor_Broadcast) $ \_ ->
+    withAsync (go 0 $ launchNode 0) $ \_ ->
+      withAsync (go 1 $ launchNode 1) $ \_ ->
+        withAsync (runABCI 0 (n 0)) $ \_ ->
+          runABCI 1 (n 1)
 
 timelineEntries :: [(Int, Actor, StateT Int (ReaderT Env IO) ())]
 timelineEntries =
-  let
-    deleteNetwork cfg = run_ "rm" ["-rf", _nodeConfig_home cfg]
-    initNetwork cfg = tendermint cfg "init" []
-
-    launchNode cfg = shelly $ tendermintNode cfg
-    resetNetwork cfg = do
-      shelly $ deleteNetwork cfg
-      shelly $ initNetwork cfg
-      log ("Node " <> tshow (_nodeConfig_index cfg) <> " has been reset") Nothing
-
-    n = mkNodeConfig
-  in
-    [ (seconds 0, Actor_Node 0, resetNetwork $ n 0)
-    , (seconds 0, Actor_Node 0, launchNode $ n 0)
-    , (seconds 0, Actor_Node 1, resetNetwork $ n 1)
-    , (seconds 0, Actor_Node 1, launchNode $ n 1)
-
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 0) greetWorld)
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 0) "(greet-world.set-message \"hello\")")
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 0) "(greet-world.greet)")
-
-    , (seconds 5, Actor_Broadcast, broadcastPactTransaction (n 1) greetWorld)
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 1) "(greet-world.set-message \"hello\")")
-    , (seconds 1, Actor_Broadcast, broadcastPactTransaction (n 1) "(greet-world.greet)")
+    [ (seconds 3, Actor_Broadcast, broadcastPactTransaction 0 greetWorld)
+    , (seconds 2, Actor_Broadcast, broadcastPactTransaction 0 "(greet-world.set-message \"hello\")")
+    , (seconds 2, Actor_Broadcast, broadcastPactTransaction 0 "(greet-world.greet)")
     ]
+
+timelineRepl :: [(Int, Actor, StateT Int (ReaderT Env IO) ())]
+timelineRepl =
+  [ (seconds 3, Actor_Broadcast, broadcastPactTransaction 0 "(+ 1 2)")
+  , (seconds 2, Actor_Broadcast, broadcastPactTransaction 1 "(+ 2 3)")
+  ]
 
 greetWorld :: Text
 greetWorld = [here|
@@ -147,31 +163,34 @@ data PactTransaction = PactTransaction
   , _pactTransaction_code  :: Text
   } deriving (Eq, Ord, Read, Show)
 
-broadcastPactTransaction :: ActorEffects m => NodeConfig -> Text -> m ()
-broadcastPactTransaction cfg code = do
-  log ("Broadcasting pact code to node #" <> tshow (_nodeConfig_index cfg) <> " at " <> _nodeConfig_rpc cfg) (Just code)
+broadcastPactTransaction :: ActorEffects m => Int -> Text -> m ()
+broadcastPactTransaction i code = do
+  let rpc = mkRPCAddress i
+  log ("Broadcasting pact code to node #" <> tshow i <> " at " <> rpc) (Just code)
   nonce <- get
   modify (+1)
-  broadcastTransaction cfg $ tshow $ PactTransaction nonce code
+  broadcastTransaction rpc $ tshow $ PactTransaction nonce code
 
-broadcastTransaction :: (MonadIO m, MonadReader Env m) => NodeConfig -> Text -> m ()
-broadcastTransaction cfg t = do
+broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> Text -> m ()
+broadcastTransaction addr t = do
   let txHex = "0x" <> convertToBase Base16 (T.encodeUtf8 t)
   case T.decodeUtf8' $ view strict $ toLazyByteString $ encodePath ["broadcast_tx_sync"] [("tx", Just txHex)] of
     Left err -> do
       log "Failed encoding of transaction with error" (Just $ tshow err)
       fatal
     Right pathAndQuery -> do
-      let url = _nodeConfig_rpc cfg <> pathAndQuery
+      let url = addr <> pathAndQuery
       log "Broadcasting at" (Just url)
       shelly $ silently $ run_ "curl" [url]
 
-runABCI :: NodeConfig -> Env -> IO ()
-runABCI cfg env = do
+runABCI :: Int -> NodeFlags -> IO ()
+runABCI nid nf = do
   rs <- Pact.initReplState Pact.StringEval Nothing
   _logger <- mkLogStdout -- too noisy
 
   let
+    env = abciEnv nid
+
     transformHandler :: EffectsT (Response t) -> IO (Response t)
     transformHandler er = do
       x <- runExceptT $ runReaderT er env
@@ -180,12 +199,12 @@ runABCI cfg env = do
         Left l -> pure $ ResponseException $ def
           & _exceptionError .~ l
 
-  serveAppWith (mkServerSettings $ _nodeConfig_app cfg) mempty
+  serveAppWith (mkServerSettings $ _nodeFlags_app nf) mempty
     $ transformApp transformHandler
-    $ app rs
+    $ app nid rs
 
 {- Env -}
-data Env = Env
+newtype Env = Env
   { _env_printer :: Text -> Text
   }
 
@@ -194,56 +213,105 @@ red   = sRGB24 0xFF 0 0
 green = sRGB24 0 0xFF 0
 cyan  = sRGB24 0 0xFF 0xFF
 
-broadcastEnv, nodeEnv, abciEnv :: Env
+broadcastEnv :: Env
 broadcastEnv = Env
   { _env_printer = sgrify [SetRGBColor Foreground cyan] . ("\n[RPC] " <>)
   }
-nodeEnv = Env
-  { _env_printer = sgrify [SetRGBColor Foreground red] . ("\n[NODE] " <>)
+
+nodeEnv, abciEnv :: Int -> Env
+nodeEnv nid = Env
+  { _env_printer = \x ->
+      sgrify [SetRGBColor Foreground red] $ "\n[NODE] Node: " <> tshow nid <> " " <> x
   }
-abciEnv = Env
-  { _env_printer = sgrify [SetRGBColor Foreground green] . ("\n[ABCI] " <>)
+abciEnv nid = Env
+  { _env_printer = \x ->
+      sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " " <> x
   }
 
 {- Tendermint -}
 type Address = Text
+type Peer = (Text, Address)
 
-data NodeConfig = NodeConfig
-  { _nodeConfig_index :: Int
-  , _nodeConfig_home :: Text
-  , _nodeConfig_app :: forall a. IsString a => (a, Int)
-  , _nodeConfig_p2p :: Address
-  , _nodeConfig_rpc :: Address
+data GlobalFlags = GlobalFlags
+  { _globalFlags_home :: Text
   }
 
-mkNodeConfig :: Int -> NodeConfig
-mkNodeConfig i =
-  let portOffset = 10 * i
-  in NodeConfig
-     { _nodeConfig_index = i
-     , _nodeConfig_home = "./.tendermint-" <> tshow i
-     , _nodeConfig_app = defaultABCIAppHostPort & _2 +~ portOffset
-     , _nodeConfig_p2p = mkAddress $ defaultTendermintP2PHostPort & _2 +~ portOffset
-     , _nodeConfig_rpc = mkAddress $ defaultTendermintRPCHostPort & _2 +~ portOffset
-     }
+data NetworkFlags = NetworkFlags
+  { _networkFlags_validators    :: Int
+  , _networkFlags_output        :: Text
+  , _networkFlags_populatePeers :: Bool
+  }
+
+data NodeFlags = NodeFlags
+  { _nodeFlags_global :: GlobalFlags
+  , _nodeFlags_app :: forall a. HostPort a
+  , _nodeFlags_p2p :: Address
+  , _nodeFlags_rpc :: Address
+  , _nodeFlags_peers :: [Peer]
+  }
+
+mkNetworkFlags :: NetworkFlags
+mkNetworkFlags = NetworkFlags
+  { _networkFlags_validators    = 2
+  , _networkFlags_output        = "./.tendermint"
+  , _networkFlags_populatePeers = True
+  }
+
+mkGlobalFlags :: Int -> GlobalFlags
+mkGlobalFlags i = GlobalFlags { _globalFlags_home = _networkFlags_output mkNetworkFlags <> "/node" <> tshow i }
+
+mkPortOffset :: Int -> Int
+mkPortOffset = (10 *)
+
+mkRPCAddress :: Int -> Address
+mkRPCAddress i = mkAddress $ defaultTendermintRPCHostPort & _2 +~ mkPortOffset i
+
+mkP2PAddress :: Int -> Address
+mkP2PAddress i = mkAddress $ defaultTendermintP2PHostPort & _2 +~ mkPortOffset i
+
+mkABCIHostPort :: Int -> HostPort a
+mkABCIHostPort i = defaultABCIAppHostPort & _2 +~ mkPortOffset i
+
+mkNodeFlags :: [(Int, Text)] -> Int -> NodeFlags
+mkNodeFlags peers i = NodeFlags
+  { _nodeFlags_global = mkGlobalFlags i
+  , _nodeFlags_app = mkABCIHostPort i
+  , _nodeFlags_p2p = mkP2PAddress i
+  , _nodeFlags_rpc = mkRPCAddress i
+  , _nodeFlags_peers = flip fmap peers $ \(i', pid) -> (pid, mkP2PAddress i')
+  }
 
 tendermintPath :: Sh.FilePath
 tendermintPath = Sh.fromText $ T.pack $(staticWhich "tendermint")
 
-tendermint :: NodeConfig -> Text -> [Text] -> Sh ()
-tendermint cfg tmCmd cmdArgs = run_ tendermintPath $ tmArgs <> [tmCmd] <> cmdArgs
+tendermint :: GlobalFlags -> Text -> [Text] -> Sh Text
+tendermint gf tmCmd cmdArgs = run tendermintPath $ tmArgs <> [tmCmd] <> cmdArgs
   where
-    tmArgs = ["--home", _nodeConfig_home cfg]
+    tmArgs = ["--home", _globalFlags_home gf]
 
-tendermintNode :: NodeConfig -> Sh ()
-tendermintNode cfg = tendermint cfg "node"
-  [ "--p2p.laddr", _nodeConfig_p2p cfg
-  , "--rpc.laddr", _nodeConfig_rpc cfg & _UPSTREAM_ "incoherent with other address flags" ("tcp://" <>)
-  , "--proxy_app", mkAddress $ _nodeConfig_app cfg
+tendermintNetwork :: NetworkFlags -> Sh Text
+tendermintNetwork nf = run tendermintPath $ ("testnet" :) $
+  [ "--v", tshow $ _networkFlags_validators nf
+  , "--o", _networkFlags_output nf
+  ] <> bool [] ["--populate-persistent-peers"] (_networkFlags_populatePeers nf)
+
+tendermintNode :: GlobalFlags -> NodeFlags -> Sh Text
+tendermintNode gf nf = tendermint gf "node"
+  [ "--p2p.laddr", _nodeFlags_p2p nf
+  , "--rpc.laddr", _nodeFlags_rpc nf & _UPSTREAM_ "incoherent with other address flags" ("tcp://" <>)
+  , "--proxy_app", mkAddress $ _nodeFlags_app nf
+  , "--p2p.persistent_peers", T.intercalate "," $ flip fmap (_nodeFlags_peers nf) $ \(pid, addr) -> mconcat
+      [ pid
+      , "@"
+      , addr
+      ]
   ]
 
+tendermintNodeId :: GlobalFlags -> Sh Text
+tendermintNodeId gf = tendermint gf "show_node_id" []
+
 defaultTendermintP2PHostPort :: (Text, Int)
-defaultTendermintP2PHostPort = ("0.0.0.0", 26656)
+defaultTendermintP2PHostPort = ("127.0.0.1", 26656)
 
 defaultTendermintRPCHostPort :: (Text, Int)
 defaultTendermintRPCHostPort = ("127.0.0.1", 26657)
@@ -256,8 +324,8 @@ type Err = Text
 type EffectsT = ReaderT Env (ExceptT Err IO)
 type MonadEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
-app :: Pact.ReplState -> App EffectsT
-app rs = App $ \case
+app :: Int -> Pact.ReplState -> App EffectsT
+app nid rs = App $ \case
   RequestEcho _ -> pure def
   RequestFlush _ -> pure def
   RequestInfo _ -> pure def
@@ -265,25 +333,25 @@ app rs = App $ \case
   RequestInitChain _ -> pure def
   RequestQuery _ -> pure def
   RequestBeginBlock _ -> pure def
-  RequestCheckTx (CheckTx hx) -> check rs hx
-  RequestDeliverTx (DeliverTx hx) -> deliver rs hx
+  RequestCheckTx (CheckTx hx) -> check nid rs hx
+  RequestDeliverTx (DeliverTx hx) -> deliver nid rs hx
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
 
-check :: MonadEffects m => Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
-check = runPact accept reject True
+check :: MonadEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
+check nid = runPact nid accept reject True
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
 
-deliver :: MonadEffects m => Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
-deliver = runPact accept reject False
+deliver :: MonadEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
+deliver nid = runPact nid accept reject False
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
 
-runPact :: MonadEffects m => m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
-runPact accept reject shouldRollback rs hx = do
+runPact :: MonadEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
+runPact _nid accept reject shouldRollback rs hx = do
   case decodeHexString hx of
     Left err -> do
       log "Failed decode with error" (Just $ tshow err)
