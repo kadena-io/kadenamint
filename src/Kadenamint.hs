@@ -83,11 +83,11 @@ broadcastEnv = Env
 nodeEnv, abciEnv :: Int -> Env
 nodeEnv nid = Env
   { _env_printer = \x ->
-      sgrify [SetRGBColor Foreground red] $ "\n[NODE] Node: " <> tshow nid <> " " <> x
+      sgrify [SetRGBColor Foreground red] $ "\n[CORE] Node: " <> tshow nid <> " | " <> x
   }
 abciEnv nid = Env
   { _env_printer = \x ->
-      sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " " <> x
+      sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " | " <> x
   }
 
 runEverything :: IO ()
