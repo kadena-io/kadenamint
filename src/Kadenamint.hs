@@ -314,15 +314,13 @@ deliver nid = runPact nid accept reject False
 
 runPact :: MonadEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
 runPact _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $ do
-  p <- decode hx
-  if shouldRollback
-    then log "Checking" (Just p)
-    else log "Delivering" Nothing
+  txt <- decode hx
+  pt <- parse txt
 
-  code <- parse p
+  log (bool "Delivering" "Checking" shouldRollback <> " transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
   let codeTx = mconcat
         [ "(begin-tx)"
-        , code
+        , _pactTransaction_code pt
         , bool "(commit-tx)" "(rollback-tx)" shouldRollback
         ]
 
@@ -333,9 +331,9 @@ runPact _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
       . liftEither . decodeHexString
 
-    parse p = liftEither $ case T.readMaybe (T.unpack p) of
+    parse txt = liftEither $ case T.readMaybe (T.unpack txt) of
       Nothing -> Left ("Failed to parse transaction", Nothing)
-      Just (PactTransaction _ code) -> Right code
+      Just p -> Right p
 
     eval code = withExceptT (\err -> ("Pact error", Just $ T.pack err))
       $ ExceptT $ liftIO $ (Strict.evalStateT (Pact.evalRepl' $ T.unpack code) rs)
