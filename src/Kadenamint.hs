@@ -288,7 +288,7 @@ type Err = Text
 type HandlerT = ReaderT Env (ExceptT Err IO)
 type HandlerEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
-app :: Int -> Pact.ReplState -> App AbciT
+app :: HandlerEffects m => Int -> Pact.ReplState -> App m
 app nid rs = App $ \case
   RequestEcho _ -> pure def
   RequestFlush _ -> pure def
