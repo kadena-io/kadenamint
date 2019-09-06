@@ -80,11 +80,17 @@ broadcastEnv = Env
   { _env_printer = sgrify [SetRGBColor Foreground cyan] . ("\n[RPC] " <>)
   }
 
-coreEnv, abciEnv :: Int -> Env
-coreEnv nid = Env
+coreEnv :: Maybe Int -> Env
+coreEnv nid' = Env
   { _env_printer = \x ->
-      sgrify [SetRGBColor Foreground red] $ "\n[CORE] Node: " <> tshow nid <> " | " <> x
+      sgrify [SetRGBColor Foreground red] $ mconcat
+      [ "\n[CORE] "
+      , maybe "" (\nid -> "Node: " <> tshow nid <> " | ") nid'
+      , x
+      ]
   }
+
+abciEnv :: Int -> Env
 abciEnv nid = Env
   { _env_printer = \x ->
       sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " | " <> x
@@ -95,23 +101,22 @@ runEverything = do
   let
     deleteNetwork = run_ "rm" ["-rf", _networkFlags_output mkNetworkFlags]
 
-    resetNetwork = void $ do
+    resetNetwork = do
       shelly deleteNetwork
-      shelly $ tendermintNetwork mkNetworkFlags
-      --log ("Network has been reset") Nothing
+      void $ shelly $ tendermintNetwork mkNetworkFlags
+      log "Network has been reset" Nothing
 
     networkNodes = [0..networkSize-1]
 
-  resetNetwork
+  flip runReaderT (coreEnv Nothing) resetNetwork
 
-  peers <- flip runReaderT coreEnv $ do
-    for networkNodes $ \i -> do
-      ni <- shelly $ silently $ tendermintNodeId $ mkGlobalFlags i
-      pure (i, T.strip ni)
+  peers <- for networkNodes $ \i -> do
+    ni <- shelly $ silently $ tendermintNodeId $ mkGlobalFlags i
+    pure (i, T.strip ni)
 
   let
     launchNode i = withAsync (runABCI i) $ \_ -> do
-      flip runReaderT (coreEnv i) $ do
+      flip runReaderT (coreEnv $ Just i) $ do
         liftIO $ threadDelay $ seconds i
         log ("Node " <> tshow i <> " will be launched") Nothing
         void $ shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags peers i)
