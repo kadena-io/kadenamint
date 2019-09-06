@@ -19,8 +19,7 @@ import Control.Monad                                    (when, (<=<))
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), asks, runReaderT)
-import Control.Monad.State                              (MonadState(..), StateT(..), evalStateT, get, modify)
-import qualified Control.Monad.State.Strict as Strict
+import Control.Monad.State.Strict                       (MonadState(..), StateT(..), evalStateT, get, modify)
 import Data.Binary.Builder                              (toLazyByteString)
 import Data.Bool                                        (bool)
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
@@ -339,7 +338,7 @@ runPact _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $
       Just p -> Right p
 
     eval code = withExceptT (\err -> ("Pact error", Just $ T.pack err))
-      $ ExceptT $ liftIO $ (Strict.evalStateT (Pact.evalRepl' $ T.unpack code) rs)
+      $ ExceptT $ liftIO $ (evalStateT (Pact.evalRepl' $ T.unpack code) rs)
 
     rejectOnError = \case
       Left (h,b) -> log h b *> reject
