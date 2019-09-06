@@ -272,7 +272,7 @@ runABCI nid = do
   let
     env = abciEnv nid
 
-    transformHandler :: AbciT (Response t) -> IO (Response t)
+    transformHandler :: HandlerT (Response t) -> IO (Response t)
     transformHandler er = do
       x <- runExceptT $ runReaderT er env
       case x of
@@ -285,8 +285,8 @@ runABCI nid = do
     $ app nid rs
 
 type Err = Text
-type AbciT = ReaderT Env (ExceptT Err IO)
-type AbciEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
+type HandlerT = ReaderT Env (ExceptT Err IO)
+type HandlerEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
 app :: Int -> Pact.ReplState -> App AbciT
 app nid rs = App $ \case
@@ -302,19 +302,19 @@ app nid rs = App $ \case
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
 
-check :: AbciEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
+check :: HandlerEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
 check nid = runPact nid accept reject True
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
 
-deliver :: AbciEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
+deliver :: HandlerEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
 deliver nid = runPact nid accept reject False
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
 
-runPact :: AbciEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
+runPact :: HandlerEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
 runPact _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $ do
   txt <- decode hx
   pt <- parse txt
