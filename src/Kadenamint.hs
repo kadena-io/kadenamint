@@ -119,8 +119,7 @@ runEverything = do
       flip runReaderT (coreEnv $ Just i) $ do
         liftIO $ threadDelay $ seconds i
         log ("Node " <> tshow i <> " will be launched") Nothing
-        void $ shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags peers i)
-        log ("Node " <> tshow i <> " has been launched") Nothing
+        shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags peers i)
 
   withAsync (runActor broadcastEnv Actor_Broadcast ) $ \_ -> do
     forConcurrently_ networkNodes launchNode
