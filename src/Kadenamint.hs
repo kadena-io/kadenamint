@@ -80,8 +80,8 @@ broadcastEnv = Env
   { _env_printer = sgrify [SetRGBColor Foreground cyan] . ("\n[RPC] " <>)
   }
 
-nodeEnv, abciEnv :: Int -> Env
-nodeEnv nid = Env
+coreEnv, abciEnv :: Int -> Env
+coreEnv nid = Env
   { _env_printer = \x ->
       sgrify [SetRGBColor Foreground red] $ "\n[CORE] Node: " <> tshow nid <> " | " <> x
   }
@@ -104,14 +104,14 @@ runEverything = do
 
   resetNetwork
 
-  peers <- flip runReaderT nodeEnv $ do
+  peers <- flip runReaderT coreEnv $ do
     for networkNodes $ \i -> do
       ni <- shelly $ silently $ tendermintNodeId $ mkGlobalFlags i
       pure (i, T.strip ni)
 
   let
     launchNode i = withAsync (runABCI i) $ \_ -> do
-      flip runReaderT (nodeEnv i) $ do
+      flip runReaderT (coreEnv i) $ do
         liftIO $ threadDelay $ seconds i
         log ("Node " <> tshow i <> " will be launched") Nothing
         void $ shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags peers i)
@@ -270,7 +270,7 @@ runABCI nid = do
   let
     env = abciEnv nid
 
-    transformHandler :: EffectsT (Response t) -> IO (Response t)
+    transformHandler :: AbciT (Response t) -> IO (Response t)
     transformHandler er = do
       x <- runExceptT $ runReaderT er env
       case x of
@@ -283,10 +283,10 @@ runABCI nid = do
     $ app nid rs
 
 type Err = Text
-type EffectsT = ReaderT Env (ExceptT Err IO)
-type MonadEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
+type AbciT = ReaderT Env (ExceptT Err IO)
+type AbciEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
-app :: Int -> Pact.ReplState -> App EffectsT
+app :: Int -> Pact.ReplState -> App AbciT
 app nid rs = App $ \case
   RequestEcho _ -> pure def
   RequestFlush _ -> pure def
@@ -300,19 +300,19 @@ app nid rs = App $ \case
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
 
-check :: MonadEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
+check :: AbciEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
 check nid = runPact nid accept reject True
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
 
-deliver :: MonadEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
+deliver :: AbciEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
 deliver nid = runPact nid accept reject False
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
 
-runPact :: MonadEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
+runPact :: AbciEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
 runPact _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $ do
   txt <- decode hx
   pt <- parse txt
