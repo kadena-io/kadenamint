@@ -17,12 +17,13 @@ in rp.project ({ pkgs, hackGet, ... }:
   let
     hs-abci = hackGet ./dep/hs-abci;
     pact = hackGet ./dep/pact;
+    which = hackGet ./dep/which;
 
   in {
     inherit withHoogle;
 
     packages = {
-      inherit pact;
+      inherit pact which;
       kadenamint = ./.;
     };
 

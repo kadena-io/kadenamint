@@ -24,11 +24,10 @@ library
                , mtl
                , pact
                , shelly
-               , template-haskell
                , text
+               , which
   exposed-modules:
     Kadenamint
-    System.Which
   ghc-options: -Wall
 
 executable kadenamint
