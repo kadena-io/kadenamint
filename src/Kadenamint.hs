@@ -40,6 +40,7 @@ import Network.HTTP.Types                               (encodePath)
 import Shelly                                           (Sh, shelly, silently, run, run_)
 import qualified Shelly as Sh
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..), setSGRCode)
+import System.Which                                     (staticWhich)
 import Text.Read as T                                   (readMaybe)
 
 import Prelude                                          hiding (log)
@@ -52,8 +53,6 @@ import Network.ABCI.Types.Messages.Request              (CheckTx(..), DeliverTx(
 import Network.ABCI.Types.Messages.Response             (_checkTxCode, _deliverTxCode, _exceptionError)
 import qualified Pact.Repl as Pact
 import qualified Pact.Repl.Types as Pact
-
-import System.Which
 
 {- Process orchestration -}
 type ActorEffects m = (MonadIO m, MonadReader Env m, MonadState Int m)
