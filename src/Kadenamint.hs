@@ -65,7 +65,7 @@ data Actor
   deriving (Eq, Ord, Show)
 
 networkSize :: Int
-networkSize = 6
+networkSize = 3
 
 newtype Env = Env
   { _env_printer :: Text -> Text
@@ -306,19 +306,32 @@ app nid rs = App $ \case
   RequestCommit _ -> pure def
 
 check :: HandlerEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
-check nid = runPact nid accept reject True
+check nid = runPactTransaction nid accept reject True
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
 
 deliver :: HandlerEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
-deliver nid = runPact nid accept reject False
+deliver nid = runPactTransaction nid accept reject False
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
 
-runPact :: HandlerEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
-runPact _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $ do
+runPactTransaction :: HandlerEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
+runPactTransaction _nid accept reject shouldRollback rs hx = do
+  libState <- liftIO $ readMVar $ rs ^. Pact.rEnv ^. Pact.eePactDbVar
+  let dbEnvVar = libState ^. Pact.rlsPure
+  oldDb <- liftIO $ view Pact.db <$> readMVar dbEnvVar
+
+  res <- runPactCode _nid accept reject shouldRollback rs hx
+
+  when shouldRollback $ liftIO $ do
+    modifyMVar_ dbEnvVar $ pure . (Pact.db .~ oldDb)
+
+  pure res
+
+runPactCode :: HandlerEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
+runPactCode _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $ do
   txt <- decode hx
   pt <- parse txt
 
