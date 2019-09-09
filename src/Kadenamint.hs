@@ -14,7 +14,8 @@ module Kadenamint where
 
 import Control.Concurrent                               (threadDelay)
 import Control.Concurrent.Async                         (forConcurrently_, withAsync)
-import Control.Lens                                     (strict, view, _2, (&), (.~), (+~))
+import Control.Concurrent.MVar                          (modifyMVar_, readMVar)
+import Control.Lens                                     (strict, view, _2, (&), (^.), (.~), (+~))
 import Control.Monad                                    (when, (<=<))
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
@@ -50,8 +51,10 @@ import Network.ABCI.Server.App                          (App(..), Request(..), R
 import Network.ABCI.Server.Middleware.RequestLogger     (mkLogStdout)
 import Network.ABCI.Types.Messages.Request              (CheckTx(..), DeliverTx(..))
 import Network.ABCI.Types.Messages.Response             (_checkTxCode, _deliverTxCode, _exceptionError)
+import qualified Pact.PersistPactDb as Pact
 import qualified Pact.Repl as Pact
 import qualified Pact.Repl.Types as Pact
+import qualified Pact.Types.Runtime as Pact
 
 {- Process orchestration -}
 type ActorEffects m = (MonadIO m, MonadReader Env m, MonadState Int m)
@@ -62,7 +65,7 @@ data Actor
   deriving (Eq, Ord, Show)
 
 networkSize :: Int
-networkSize = 3
+networkSize = 6
 
 newtype Env = Env
   { _env_printer :: Text -> Text
@@ -115,7 +118,7 @@ runEverything = do
   let
     launchNode i = withAsync (runABCI i) $ \_ -> do
       flip runReaderT (coreEnv $ Just i) $ do
-        liftIO $ threadDelay $ seconds i
+        liftIO $ threadDelay $ seconds i `div` 10
         log ("Node " <> tshow i <> " will be launched") Nothing
         shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags peers i)
 
@@ -320,14 +323,16 @@ runPact _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $
   pt <- parse txt
 
   log (bool "Delivering" "Checking" shouldRollback <> " transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
-  let codeTx = mconcat
-        [ "(begin-tx)"
-        , _pactTransaction_code pt
-        , bool "(commit-tx)" "(rollback-tx)" shouldRollback
-        ]
 
-  r <- eval codeTx
+  libState <- liftIO $ readMVar $ rs ^. Pact.rEnv ^. Pact.eePactDbVar
+  let dbEnvVar = libState ^. Pact.rlsPure
+  oldDb <- liftIO $ view Pact.db <$> readMVar dbEnvVar
+
+  r <- eval $ _pactTransaction_code pt
   log "Pact result" (Just $ T.strip $ tshow r)
+
+  when shouldRollback $ liftIO $ do
+    modifyMVar_ dbEnvVar $ pure . (Pact.db .~ oldDb)
 
   where
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
