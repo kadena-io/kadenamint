@@ -54,6 +54,7 @@ import Network.ABCI.Types.Messages.Response             (_checkTxCode, _deliverT
 import qualified Pact.PersistPactDb as Pact
 import qualified Pact.Repl as Pact
 import qualified Pact.Repl.Types as Pact
+import qualified Pact.Types.Pretty as Pact
 import qualified Pact.Types.Runtime as Pact
 
 {- Process orchestration -}
@@ -335,7 +336,7 @@ runPactCode accept reject shouldRollback rs hx = rejectOnError $ do
   snapshot <- snapshotPactState
 
   r <- eval $ _pactTransaction_code pt
-  log "Pact result" (Just $ T.strip $ tshow r)
+  log "Pact result" (Just $ T.strip $ tshow $ Pact.pretty r)
 
   when shouldRollback $ restorePactState snapshot
 
