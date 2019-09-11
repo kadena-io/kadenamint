@@ -27,7 +27,6 @@ import Data.ByteArray.Encoding                          (Base(Base16), convertTo
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
 import Data.Default                                     (Default(..))
-import Data.Foldable                                    (for_)
 import Data.Functor                                     (void)
 import Data.String                                      (IsString)
 import Data.String.Here.Uninterpolated                  (here)
@@ -119,27 +118,21 @@ runEverything = do
   withAsync (runTimeline broadcastEnv timelineGreet ) $ \_ -> do
     forConcurrently_ networkNodes launchNode
 
-type TimelineEffects m = (MonadState Int m, MonadReader Env m, MonadIO m)
-type Timeline = [(Int, StateT Int (ReaderT Env IO) ())]
+type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
 
-timelineGreet :: Timeline
-timelineGreet =
-    [ (seconds 3, broadcastPactTransaction 0 greetWorld)
-    , (seconds 2, broadcastPactTransaction 1 "(greet-world.set-message \"hello\")")
-    , (seconds 2, broadcastPactTransaction 0 "(greet-world.greet)")
-    ]
+timelineGreet :: Timeline m => m ()
+timelineGreet = do
+  sleep 3 *> broadcastPactTransaction 0 greetWorld
+  sleep 2 *> broadcastPactTransaction 1 "(greet-world.set-message \"hello\")"
+  sleep 2 *> broadcastPactTransaction 0 "(greet-world.greet)"
 
-timelineRepl :: TimelineEffects m => [(Int, m())]
-timelineRepl =
-  [ (seconds 3, broadcastPactTransaction 0 "(+ 1 2)")
-  , (seconds 2, broadcastPactTransaction 1 "(+ 2 3)")
-  ]
+timelineRepl :: Timeline m => m ()
+timelineRepl = do
+  sleep 3 *> broadcastPactTransaction 0 "(+ 1 2)"
+  sleep 2 *> broadcastPactTransaction 1 "(+ 2 3)"
 
-runTimeline :: Env -> Timeline -> IO ()
-runTimeline env timeline = flip runReaderT env $ flip evalStateT 0 $
-  for_ timeline $ \(entryDelay, entryAction) -> do
-    liftIO $ threadDelay entryDelay
-    entryAction
+runTimeline :: Env -> StateT Int (ReaderT Env IO) a -> IO a
+runTimeline env = flip runReaderT env . flip evalStateT 0
 
 {- Tendermint RPC -}
 data PactTransaction = PactTransaction
@@ -147,7 +140,7 @@ data PactTransaction = PactTransaction
   , _pactTransaction_code  :: Text
   } deriving (Eq, Ord, Read, Show)
 
-broadcastPactTransaction :: TimelineEffects m => Int -> Text -> m ()
+broadcastPactTransaction :: Timeline m => Int -> Text -> m ()
 broadcastPactTransaction i code = do
   let rpc = mkRPCAddress i
   log ("Broadcasting pact code to node #" <> tshow i <> " at " <> rpc) (Just code)
@@ -404,6 +397,9 @@ doubleQuotes t = "\"" <> t <> "\""
 
 decodeHexString :: HexString -> Either T.UnicodeException Text
 decodeHexString (HexString bs) = T.decodeUtf8' bs & _TODO_ "make sure this is the right decoding"
+
+sleep :: MonadIO m => Int -> m ()
+sleep = liftIO . threadDelay . seconds
 
 {- Issue tracking -}
 _UPSTREAM_ :: Text -> a -> a
