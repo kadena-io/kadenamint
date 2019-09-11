@@ -366,7 +366,7 @@ runPactCode _nid accept reject shouldRollback rs hx = rejectOnError $ do
 
     rejectOnError = runExceptT >=> \case
       Left (h,b) -> log h b *> reject
-      Right _ -> accept
+      Right () -> accept
 
 {- Utils -}
 type HostPort a = IsString a => (a, Int)
