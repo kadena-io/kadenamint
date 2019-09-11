@@ -57,13 +57,6 @@ import qualified Pact.Repl.Types as Pact
 import qualified Pact.Types.Runtime as Pact
 
 {- Process orchestration -}
-type ActorEffects m = (MonadIO m, MonadReader Env m, MonadState Int m)
-
-data Actor
-  = Actor_Node Int
-  | Actor_Broadcast
-  deriving (Eq, Ord, Show)
-
 networkSize :: Int
 networkSize = 3
 
@@ -122,28 +115,30 @@ runEverything = do
         log ("Node " <> tshow i <> " will be launched") Nothing
         shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags peers i)
 
-  withAsync (runActor broadcastEnv Actor_Broadcast ) $ \_ -> do
+  withAsync (runTimeline broadcastEnv timelineGreet ) $ \_ -> do
     forConcurrently_ networkNodes launchNode
 
-timelineEntries :: [(Int, Actor, StateT Int (ReaderT Env IO) ())]
-timelineEntries =
-    [ (seconds 3, Actor_Broadcast, broadcastPactTransaction 0 greetWorld)
-    , (seconds 2, Actor_Broadcast, broadcastPactTransaction 1 "(greet-world.set-message \"hello\")")
-    , (seconds 2, Actor_Broadcast, broadcastPactTransaction 0 "(greet-world.greet)")
+type TimelineEffects m = (MonadState Int m, MonadReader Env m, MonadIO m)
+type Timeline = [(Int, StateT Int (ReaderT Env IO) ())]
+
+timelineGreet :: Timeline
+timelineGreet =
+    [ (seconds 3, broadcastPactTransaction 0 greetWorld)
+    , (seconds 2, broadcastPactTransaction 1 "(greet-world.set-message \"hello\")")
+    , (seconds 2, broadcastPactTransaction 0 "(greet-world.greet)")
     ]
 
-timelineRepl :: [(Int, Actor, StateT Int (ReaderT Env IO) ())]
+timelineRepl :: TimelineEffects m => [(Int, m())]
 timelineRepl =
-  [ (seconds 3, Actor_Broadcast, broadcastPactTransaction 0 "(+ 1 2)")
-  , (seconds 2, Actor_Broadcast, broadcastPactTransaction 1 "(+ 2 3)")
+  [ (seconds 3, broadcastPactTransaction 0 "(+ 1 2)")
+  , (seconds 2, broadcastPactTransaction 1 "(+ 2 3)")
   ]
 
-runActor :: Env -> Actor -> IO ()
-runActor env actor = flip runReaderT env $ flip evalStateT 0 $
-  for_ timelineEntries $ \(entryDelay, entryActor, entryAction) ->
-    when (actor == entryActor) $ do
-      liftIO $ threadDelay entryDelay
-      entryAction
+runTimeline :: Env -> Timeline -> IO ()
+runTimeline env timeline = flip runReaderT env $ flip evalStateT 0 $
+  for_ timeline $ \(entryDelay, entryAction) -> do
+    liftIO $ threadDelay entryDelay
+    entryAction
 
 {- Tendermint RPC -}
 data PactTransaction = PactTransaction
@@ -151,7 +146,7 @@ data PactTransaction = PactTransaction
   , _pactTransaction_code  :: Text
   } deriving (Eq, Ord, Read, Show)
 
-broadcastPactTransaction :: ActorEffects m => Int -> Text -> m ()
+broadcastPactTransaction :: TimelineEffects m => Int -> Text -> m ()
 broadcastPactTransaction i code = do
   let rpc = mkRPCAddress i
   log ("Broadcasting pact code to node #" <> tshow i <> " at " <> rpc) (Just code)
