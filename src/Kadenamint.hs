@@ -285,14 +285,14 @@ runABCI nid = do
 
   serveAppWith (mkServerSettings $ mkABCIHostPort nid) mempty
     $ transformApp transformHandler
-    $ app nid rs
+    $ app rs
 
 type Err = Text
 type HandlerT = ReaderT Env (ExceptT Err IO)
 type HandlerEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
-app :: HandlerEffects m => Int -> Pact.ReplState -> App m
-app nid rs = App $ \case
+app :: HandlerEffects m => Pact.ReplState -> App m
+app rs = App $ \case
   RequestEcho _ -> pure def
   RequestFlush _ -> pure def
   RequestInfo _ -> pure def
@@ -300,38 +300,38 @@ app nid rs = App $ \case
   RequestInitChain _ -> pure def
   RequestQuery _ -> pure def
   RequestBeginBlock _ -> pure def
-  RequestCheckTx (CheckTx hx) -> check nid rs hx
-  RequestDeliverTx (DeliverTx hx) -> deliver nid rs hx
+  RequestCheckTx (CheckTx hx) -> check rs hx
+  RequestDeliverTx (DeliverTx hx) -> deliver rs hx
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
 
-check :: HandlerEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
-check nid = runPactTransaction nid accept reject True
+check :: HandlerEffects m => Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
+check = runPactTransaction accept reject True
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
 
-deliver :: HandlerEffects m => Int -> Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
-deliver nid = runPactTransaction nid accept reject False
+deliver :: HandlerEffects m => Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
+deliver = runPactTransaction accept reject False
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
 
-runPactTransaction :: HandlerEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
-runPactTransaction _nid accept reject shouldRollback rs hx = do
+runPactTransaction :: HandlerEffects m => m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
+runPactTransaction accept reject shouldRollback rs hx = do
   libState <- liftIO $ readMVar $ rs ^. Pact.rEnv ^. Pact.eePactDbVar
   let dbEnvVar = libState ^. Pact.rlsPure
   oldDb <- liftIO $ view Pact.db <$> readMVar dbEnvVar
 
-  res <- runPactCode _nid accept reject shouldRollback rs hx
+  res <- runPactCode accept reject shouldRollback rs hx
 
   when shouldRollback $ liftIO $ do
     modifyMVar_ dbEnvVar $ pure . (Pact.db .~ oldDb)
 
   pure res
 
-runPactCode :: HandlerEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
-runPactCode _nid accept reject shouldRollback rs hx = rejectOnError $ do
+runPactCode :: HandlerEffects m => m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
+runPactCode accept reject shouldRollback rs hx = rejectOnError $ do
   txt <- decode hx
   pt <- parse txt
 
