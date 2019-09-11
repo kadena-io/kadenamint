@@ -379,7 +379,7 @@ tshow = T.pack . show
 log :: (MonadIO m, MonadReader Env m) => Text -> Maybe Text -> m ()
 log header body = do
   p <- asks _env_printer
-  liftIO $ putStrLn $ T.unpack $ p $ header <> maybe "" (":\n" <>) body
+  liftIO $ putStrLn $ T.unpack $ p $ header <> maybe "" (\b -> ":\n" <> T.unlines (fmap ("  " <>) $ T.lines b)) body
 
 sgrify :: [SGR] -> Text -> Text
 sgrify codes txt = mconcat
