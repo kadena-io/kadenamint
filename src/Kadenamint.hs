@@ -16,7 +16,7 @@ import Control.Concurrent                               (threadDelay)
 import Control.Concurrent.Async                         (forConcurrently_, withAsync)
 import Control.Concurrent.MVar                          (modifyMVar_, readMVar)
 import Control.Lens                                     (strict, view, _2, (&), (^.), (.~), (+~))
-import Control.Monad                                    (when, (<=<))
+import Control.Monad                                    (when, (>=>))
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), asks, runReaderT)
@@ -331,21 +331,18 @@ runPactTransaction _nid accept reject shouldRollback rs hx = do
   pure res
 
 runPactCode :: HandlerEffects m => nid -> m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
-runPactCode _nid accept reject shouldRollback rs hx = rejectOnError <=< runExceptT $ do
+runPactCode _nid accept reject shouldRollback rs hx = rejectOnError $ do
   txt <- decode hx
   pt <- parse txt
 
   log (bool "Delivering" "Checking" shouldRollback <> " transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
 
-  libState <- liftIO $ readMVar $ rs ^. Pact.rEnv ^. Pact.eePactDbVar
-  let dbEnvVar = libState ^. Pact.rlsPure
-  oldDb <- liftIO $ view Pact.db <$> readMVar dbEnvVar
+  snapshot <- snapshotPactState
 
   r <- eval $ _pactTransaction_code pt
   log "Pact result" (Just $ T.strip $ tshow r)
 
-  when shouldRollback $ liftIO $ do
-    modifyMVar_ dbEnvVar $ pure . (Pact.db .~ oldDb)
+  when shouldRollback $ restorePactState snapshot
 
   where
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
@@ -358,7 +355,16 @@ runPactCode _nid accept reject shouldRollback rs hx = rejectOnError <=< runExcep
     eval code = withExceptT (\err -> ("Pact error", Just $ T.pack err))
       $ ExceptT $ liftIO $ (evalStateT (Pact.evalRepl' $ T.unpack code) rs)
 
-    rejectOnError = \case
+    snapshotPactState = liftIO $ do
+      libState <- readMVar $ rs ^. Pact.rEnv ^. Pact.eePactDbVar
+      let dbEnvVar = libState ^. Pact.rlsPure
+      oldDb <- view Pact.db <$> readMVar dbEnvVar
+      pure (dbEnvVar, oldDb)
+
+    restorePactState (dbEnvVar, oldDb) = liftIO $
+      modifyMVar_ dbEnvVar $ pure . (Pact.db .~ oldDb)
+
+    rejectOnError = runExceptT >=> \case
       Left (h,b) -> log h b *> reject
       Right _ -> accept
 
