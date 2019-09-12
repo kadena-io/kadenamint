@@ -16,7 +16,7 @@ import Control.Concurrent                               (threadDelay)
 import Control.Concurrent.Async                         (forConcurrently_, withAsync)
 import Control.Concurrent.MVar                          (modifyMVar_, readMVar)
 import Control.Lens                                     (strict, view, _2, (&), (^.), (.~), (+~))
-import Control.Monad                                    (when, (>=>))
+import Control.Monad                                    ((>=>))
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), asks, runReaderT)
@@ -302,22 +302,22 @@ app rs = App $ \case
   RequestCommit _ -> pure def
 
 check :: HandlerEffects m => Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
-check = runPactTransaction accept reject True
+check rs hx = withPactRollback rs $ runPactTransaction "Checking" accept reject rs hx
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
 
 deliver :: HandlerEffects m => Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
-deliver = runPactTransaction accept reject False
+deliver = runPactTransaction "Delivering" accept reject
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
 
-runPactTransaction :: HandlerEffects m => m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
-runPactTransaction accept reject shouldRollback rs hx = do
+withPactRollback :: HandlerEffects m => Pact.ReplState -> m a -> m a
+withPactRollback rs action = do
   snapshot <- snapshotPactState
-  res <- runPactCode accept reject shouldRollback rs hx
-  when shouldRollback $ restorePactState snapshot
+  res <- action
+  restorePactState snapshot
   pure res
 
   where
@@ -330,13 +330,12 @@ runPactTransaction accept reject shouldRollback rs hx = do
     restorePactState (dbEnvVar, oldDb) = liftIO $
       modifyMVar_ dbEnvVar $ pure . (Pact.db .~ oldDb)
 
-
-runPactCode :: HandlerEffects m => m a -> m a -> Bool -> Pact.ReplState -> HexString -> m a
-runPactCode accept reject shouldRollback rs hx = rejectOnError $ do
+runPactTransaction :: HandlerEffects m => Text -> m a -> m a -> Pact.ReplState -> HexString -> m a
+runPactTransaction hook accept reject rs hx = rejectOnError $ do
   txt <- decode hx
   pt <- parse txt
 
-  log (bool "Delivering" "Checking" shouldRollback <> " transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
+  log (hook <> " transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
 
   r <- eval $ _pactTransaction_code pt
   log "Pact result" (Just $ T.strip $ tshow $ Pact.pretty r)
