@@ -90,17 +90,25 @@ abciEnv nid = Env
       sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " | " <> x
   }
 
-initNode :: MonadIO m => Int -> m ()
-initNode i = void $ shelly $ do
+initNode :: MonadIO m => Int -> m InitializedNode
+initNode i = shelly $ do
   void $ tendermint (mkGlobalFlags i) "init" []
   cp (genesisFile 0) (configDir i)
+  pure $ mkInitializedNode i
 
-launchNode :: MonadIO m => [(Int, Text)] -> Int -> m ()
-launchNode persistentPeers i = void $ liftIO $ withAsync (runABCI i) $ \_ -> do
-  flip runReaderT (coreEnv $ Just i) $ do
-    liftIO $ threadDelay $ seconds i `div` 10
-    log ("Node " <> tshow i <> " will be launched") Nothing
-    shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags persistentPeers i)
+launchNode :: MonadIO m => [(Int, Text)] -> InitializedNode -> m ()
+launchNode persistentPeers n = void $ do
+  let i = _initializedNode_index n
+  liftIO $ withAsync (runABCI i) $ \_ -> do
+    flip runReaderT (coreEnv $ Just i) $ do
+      liftIO $ threadDelay $ seconds i `div` 10
+      log ("Node " <> tshow i <> " will be launched") Nothing
+      shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags persistentPeers i)
+
+initNetwork :: MonadIO m => Int -> m [InitializedNode]
+initNetwork size = do
+  void $ shelly $ tendermintNetwork mkNetworkFlags
+  pure $ mkInitializedNode <$> [0..size-1]
 
 runEverything :: IO ()
 runEverything = do
@@ -109,16 +117,15 @@ runEverything = do
 
     resetNetwork = do
       shelly deleteNetwork
-      void $ shelly $ tendermintNetwork mkNetworkFlags
+      res <- initNetwork genesisNetworkSize
       log "Network has been reset" Nothing
+      pure res
 
-    genesisNodes = [0..genesisNetworkSize-1]
+  genesisNodes <- flip runReaderT (coreEnv Nothing) resetNetwork
 
-  flip runReaderT (coreEnv Nothing) resetNetwork
-
-  peers <- for genesisNodes $ \i -> do
-    ni <- shelly $ silently $ tendermintNodeId $ mkGlobalFlags i
-    pure (i, T.strip ni)
+  peers <- for genesisNodes $ \gn -> do
+    ni <- shelly $ silently $ tendermintNodeId gn
+    pure (_initializedNode_index gn, T.strip ni)
 
   withAsync (runTimeline broadcastEnv $ timelineGreet peers) $ \_ -> do
     forConcurrently_ genesisNodes (launchNode peers)
@@ -129,7 +136,7 @@ timelineGreet :: Timeline m => [(Int, Text)] -> m ()
 timelineGreet peers = do
   sleep 3 *> broadcastPactTransaction 0 greetWorld
   sleep 2 *> broadcastPactTransaction 1 "(greet-world.set-message \"hello\")"
-  sleep 1 *> initNode 3 *> liftIO (void $ async $ launchNode peers 3)
+  sleep 1 *> initNode 3 >>= liftIO . void . async . launchNode peers
   sleep 3 *> broadcastPactTransaction 3 "(greet-world.greet)"
 
 timelineRepl :: Timeline m => m ()
@@ -179,8 +186,12 @@ toEndpoint = \case
   where
     f = ("broadcast_tx_" <>)
 
-
 {- Tendermint CLI -}
+data InitializedNode = InitializedNode
+  { _initializedNode_index :: Int
+  , _initializedNode_home :: Text
+  }
+
 type Address = Text
 type Peer = (Text, Address)
 
@@ -211,11 +222,14 @@ mkNetworkFlags = NetworkFlags
   , _networkFlags_populatePeers = True
   }
 
-mkNodeHome :: Int -> Text
-mkNodeHome i = _networkFlags_output mkNetworkFlags <> "/node" <> tshow i
+mkInitializedNode :: Int -> InitializedNode
+mkInitializedNode = InitializedNode <*> mkNodeHomePath
+
+mkNodeHomePath :: Int -> Text
+mkNodeHomePath i = _networkFlags_output mkNetworkFlags <> "/node" <> tshow i
 
 mkGlobalFlags :: Int -> GlobalFlags
-mkGlobalFlags i = GlobalFlags { _globalFlags_home = mkNodeHome i }
+mkGlobalFlags i = GlobalFlags { _globalFlags_home = mkNodeHomePath i }
 
 mkPortOffset :: Int -> Int
 mkPortOffset = (10 *)
@@ -246,8 +260,7 @@ genesisFile :: Int -> Sh.FilePath
 genesisFile i = configDir i </> ("genesis.json" :: Text)
 
 configDir :: Int -> Sh.FilePath
-configDir i = mkNodeHome i </> ("config" :: Text)
-
+configDir i = mkNodeHomePath i </> ("config" :: Text)
 
 tendermintPath :: Sh.FilePath
 tendermintPath = Sh.fromText $ T.pack $(staticWhich "tendermint")
@@ -282,8 +295,8 @@ tendermintNode gf nf = tendermint gf "node"
   , "--consensus.create_empty_blocks" <> _UPSTREAM_ "incoherent with other args" "=" <> tshow (_nodeFlags_emptyBlocks nf)
   ]
 
-tendermintNodeId :: GlobalFlags -> Sh Text
-tendermintNodeId gf = tendermint gf "show_node_id" []
+tendermintNodeId :: InitializedNode -> Sh Text
+tendermintNodeId n = tendermint (mkGlobalFlags $ _initializedNode_index n) "show_node_id" []
 
 {- Network addresses -}
 defaultTendermintP2PHostPort :: (Text, Int)
