@@ -13,7 +13,7 @@
 module Kadenamint where
 
 import Control.Concurrent                               (threadDelay)
-import Control.Concurrent.Async                         (forConcurrently_, withAsync)
+import Control.Concurrent.Async                         (async, forConcurrently_, withAsync)
 import Control.Concurrent.MVar                          (modifyMVar_, readMVar)
 import Control.Lens                                     (strict, view, _2, (&), (^.), (.~), (+~))
 import Control.Monad                                    ((>=>))
@@ -36,7 +36,7 @@ import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
 import Data.Traversable                                 (for)
 import Network.HTTP.Types                               (encodePath)
-import Shelly                                           (Sh, shelly, silently, run, run_)
+import Shelly                                           (Sh, cp, shelly, silently, run, run_, (</>))
 import qualified Shelly as Sh
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..), setSGRCode)
 import System.Which                                     (staticWhich)
@@ -57,8 +57,8 @@ import qualified Pact.Types.Pretty as Pact
 import qualified Pact.Types.Runtime as Pact
 
 {- Process orchestration -}
-networkSize :: Int
-networkSize = 3
+genesisNetworkSize :: Int
+genesisNetworkSize = 3
 
 newtype Env = Env
   { _env_printer :: Text -> Text
@@ -90,6 +90,18 @@ abciEnv nid = Env
       sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " | " <> x
   }
 
+initNode :: MonadIO m => Int -> m ()
+initNode i = void $ shelly $ do
+  void $ tendermint (mkGlobalFlags i) "init" []
+  cp (genesisFile 0) (configDir i)
+
+launchNode :: MonadIO m => [(Int, Text)] -> Int -> m ()
+launchNode persistentPeers i = void $ liftIO $ withAsync (runABCI i) $ \_ -> do
+  flip runReaderT (coreEnv $ Just i) $ do
+    liftIO $ threadDelay $ seconds i `div` 10
+    log ("Node " <> tshow i <> " will be launched") Nothing
+    shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags persistentPeers i)
+
 runEverything :: IO ()
 runEverything = do
   let
@@ -100,31 +112,25 @@ runEverything = do
       void $ shelly $ tendermintNetwork mkNetworkFlags
       log "Network has been reset" Nothing
 
-    networkNodes = [0..networkSize-1]
+    genesisNodes = [0..genesisNetworkSize-1]
 
   flip runReaderT (coreEnv Nothing) resetNetwork
 
-  peers <- for networkNodes $ \i -> do
+  peers <- for genesisNodes $ \i -> do
     ni <- shelly $ silently $ tendermintNodeId $ mkGlobalFlags i
     pure (i, T.strip ni)
 
-  let
-    launchNode i = withAsync (runABCI i) $ \_ -> do
-      flip runReaderT (coreEnv $ Just i) $ do
-        liftIO $ threadDelay $ seconds i `div` 10
-        log ("Node " <> tshow i <> " will be launched") Nothing
-        shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags peers i)
-
-  withAsync (runTimeline broadcastEnv timelineGreet ) $ \_ -> do
-    forConcurrently_ networkNodes launchNode
+  withAsync (runTimeline broadcastEnv $ timelineGreet peers) $ \_ -> do
+    forConcurrently_ genesisNodes (launchNode peers)
 
 type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
 
-timelineGreet :: Timeline m => m ()
-timelineGreet = do
+timelineGreet :: Timeline m => [(Int, Text)] -> m ()
+timelineGreet peers = do
   sleep 3 *> broadcastPactTransaction 0 greetWorld
   sleep 2 *> broadcastPactTransaction 1 "(greet-world.set-message \"hello\")"
-  sleep 2 *> broadcastPactTransaction 0 "(greet-world.greet)"
+  sleep 1 *> initNode 3 *> liftIO (void $ async $ launchNode peers 3)
+  sleep 3 *> broadcastPactTransaction 3 "(greet-world.greet)"
 
 timelineRepl :: Timeline m => m ()
 timelineRepl = do
@@ -194,18 +200,22 @@ data NodeFlags = NodeFlags
   , _nodeFlags_p2p :: Address
   , _nodeFlags_rpc :: Address
   , _nodeFlags_peers :: [Peer]
+  , _nodeFlags_privatePeers :: [Peer]
   , _nodeFlags_emptyBlocks :: Bool
   }
 
 mkNetworkFlags :: NetworkFlags
 mkNetworkFlags = NetworkFlags
-  { _networkFlags_validators    = networkSize
+  { _networkFlags_validators    = genesisNetworkSize
   , _networkFlags_output        = "./.tendermint"
   , _networkFlags_populatePeers = True
   }
 
+mkNodeHome :: Int -> Text
+mkNodeHome i = _networkFlags_output mkNetworkFlags <> "/node" <> tshow i
+
 mkGlobalFlags :: Int -> GlobalFlags
-mkGlobalFlags i = GlobalFlags { _globalFlags_home = _networkFlags_output mkNetworkFlags <> "/node" <> tshow i }
+mkGlobalFlags i = GlobalFlags { _globalFlags_home = mkNodeHome i }
 
 mkPortOffset :: Int -> Int
 mkPortOffset = (10 *)
@@ -225,9 +235,19 @@ mkNodeFlags peers i = NodeFlags
   , _nodeFlags_app = mkABCIHostPort i
   , _nodeFlags_p2p = mkP2PAddress i
   , _nodeFlags_rpc = mkRPCAddress i
-  , _nodeFlags_peers = flip fmap peers $ \(i', pid) -> (pid, mkP2PAddress i')
+  , _nodeFlags_peers = ps
+  , _nodeFlags_privatePeers = ps
   , _nodeFlags_emptyBlocks = False
   }
+  where
+    ps = flip fmap peers $ \(i', pid) -> (pid, mkP2PAddress i')
+
+genesisFile :: Int -> Sh.FilePath
+genesisFile i = configDir i </> ("genesis.json" :: Text)
+
+configDir :: Int -> Sh.FilePath
+configDir i = mkNodeHome i </> ("config" :: Text)
+
 
 tendermintPath :: Sh.FilePath
 tendermintPath = Sh.fromText $ T.pack $(staticWhich "tendermint")
@@ -253,6 +273,12 @@ tendermintNode gf nf = tendermint gf "node"
       , "@"
       , addr
       ]
+  , "--p2p.private_peer_ids", T.intercalate "," $ fmap fst (_nodeFlags_privatePeers nf)
+    & _TODO_ (mconcat
+               [ "figure out if there's a better way to hush logs:"
+               , "see https://github.com/tendermint/tendermint/issues/1215"
+               , "& https://github.com/tendermint/tendermint/pull/3474"
+               ])
   , "--consensus.create_empty_blocks" <> _UPSTREAM_ "incoherent with other args" "=" <> tshow (_nodeFlags_emptyBlocks nf)
   ]
 
