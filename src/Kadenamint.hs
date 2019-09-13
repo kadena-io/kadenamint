@@ -108,7 +108,7 @@ launchNode persistentPeers n = void $ do
   liftIO $ withAsync (runABCI i) $ \_ ->
     flip runReaderT (coreEnv $ Just i) $ do
       liftIO $ threadDelay $ seconds i `div` 10
-      log ("Node " <> tshow i <> " will be launched") Nothing
+      log "Launching" Nothing
       shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags persistentPeers i)
 
 initNetwork :: MonadIO m => Int -> m [InitializedNode]
