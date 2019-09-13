@@ -25,6 +25,7 @@ library
                , pact
                , shelly
                , text
+               , transformers
                , which
   exposed-modules:
     Kadenamint

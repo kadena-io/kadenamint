@@ -21,6 +21,7 @@ import Control.Monad.Except                             (MonadError(..), ExceptT
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), asks, runReaderT)
 import Control.Monad.State.Strict                       (MonadState(..), StateT(..), evalStateT, get, modify)
+import Control.Monad.Trans.Class                        (lift)
 import Data.Binary.Builder                              (toLazyByteString)
 import Data.Bool                                        (bool)
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
@@ -460,16 +461,22 @@ app rs = App $ \case
   RequestCommit _ -> pure def
 
 check :: HandlerEffects m => Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
-check rs hx = withPactRollback rs $ runPactTransaction "Checking" accept reject rs hx
+check rs hx = withPactRollback rs $ runPactTransaction logParsed logEvaluated accept reject rs hx
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
+    logParsed pt = log ("Checking transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
+    logEvaluated _ = pure ()
+
 
 deliver :: HandlerEffects m => Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
-deliver = runPactTransaction "Delivering" accept reject
+deliver = runPactTransaction logParsed logEvaluated accept reject
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
+    logParsed pt = log ("Delivering transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
+    logEvaluated r = log "Pact result" (Just $ T.strip $ tshow $ Pact.pretty r)
+
 
 withPactRollback :: HandlerEffects m => Pact.ReplState -> m a -> m a
 withPactRollback rs action = do
@@ -488,18 +495,18 @@ withPactRollback rs action = do
     restorePactState (dbEnvVar, oldDb) = liftIO $
       modifyMVar_ dbEnvVar $ pure . (Pact.db .~ oldDb)
 
-runPactTransaction :: HandlerEffects m => Text -> m a -> m a -> Pact.ReplState -> HexString -> m a
-runPactTransaction hook accept reject rs hx = rejectOnError $ do
+runPactTransaction :: HandlerEffects m => (PactTransaction -> m ()) -> (Pact.Term Pact.Name -> m ()) -> m a -> m a -> Pact.ReplState -> HexString -> m a
+runPactTransaction logParsed logEvaluated accept reject rs hx = rejectOnError $ do
   txt <- decode hx
   pt <- parse txt
 
-  log (hook <> " transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
+  lift $ logParsed pt
 
   r <- eval =<< case _pactTransaction_code pt of
     PactCode_Text t -> pure t
     PactCode_File f -> shelly $ Sh.readfile $ Sh.fromText f
 
-  log "Pact result" (Just $ T.strip $ tshow $ Pact.pretty r)
+  lift $ logEvaluated r
 
   where
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
