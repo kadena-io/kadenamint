@@ -14,7 +14,6 @@ library
                , colour
                , conduit-extra
                , data-default
-               , here
                , hs-abci-server
                , hs-abci-types
                , hs-abci-extra
@@ -26,6 +25,7 @@ library
                , shelly
                , text
                , which
+
   exposed-modules:
     Kadenamint
   ghc-options: -Wall

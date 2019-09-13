@@ -30,7 +30,6 @@ import Data.Default                                     (Default(..))
 import Data.Foldable                                    (for_)
 import Data.Functor                                     (void)
 import Data.String                                      (IsString)
-import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -147,21 +146,21 @@ type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
 timelineGreet :: IO ()
 timelineGreet = withNetwork 3 $ \peers -> \case
   [n0, n1, _n2] -> do
-    sleep 3 *> broadcastPactTransaction n0 greetWorld
-    sleep 2 *> broadcastPactTransaction n1 "(greet-world.set-message \"hello\")"
+    sleep 3 *> broadcastPactFile n0 "pact/hello-world.pact"
+    sleep 2 *> broadcastPactText n1 "(greet-world.set-message \"hello\")"
 
     sleep 1
     n3 <- initExtraNode n0 3
     liftIO $ void $ async $ launchNode peers n3
 
-    sleep 3 *> broadcastPactTransaction n3 "(greet-world.greet)"
+    sleep 3 *> broadcastPactText n3 "(greet-world.greet)"
   _ -> impossible
 
 timelineRepl :: IO ()
 timelineRepl = withNetwork 2 $ \_ -> \case
   [n0, n1] -> do
-    sleep 3 *> broadcastPactTransaction n0 "(+ 1 2)"
-    sleep 2 *> broadcastPactTransaction n1 "(+ 2 3)"
+    sleep 3 *> broadcastPactText n0 "(+ 1 2)"
+    sleep 2 *> broadcastPactText n1 "(+ 2 3)"
   _ -> impossible
 
 runTimeline :: Env -> StateT Int (ReaderT Env IO) a -> IO a
@@ -170,15 +169,28 @@ runTimeline env = flip runReaderT env . flip evalStateT 0
 {- Tendermint RPC -}
 data PactTransaction = PactTransaction
   { _pactTransaction_nonce :: Int
-  , _pactTransaction_code  :: Text
+  , _pactTransaction_code  :: PactCode
   } deriving (Eq, Ord, Read, Show)
 
-broadcastPactTransaction :: Timeline m => InitializedNode -> Text -> m ()
-broadcastPactTransaction n code = do
+data PactCode
+  = PactCode_Text Text
+  | PactCode_File Text
+  deriving (Eq, Ord, Read, Show)
+
+broadcastPactText :: Timeline m => InitializedNode -> Text -> m ()
+broadcastPactText n = broadcastPact n . PactCode_Text
+
+broadcastPactFile :: Timeline m => InitializedNode -> Text -> m ()
+broadcastPactFile n path = do
+  p <- shelly $ Sh.absPath $ Sh.fromText path
+  broadcastPact n $ PactCode_File $ Sh.toTextIgnore p
+
+broadcastPact :: Timeline m => InitializedNode -> PactCode -> m ()
+broadcastPact n code = do
   let
     i = _initializedNode_index n
     rpc = mkRPCAddress i
-  log ("Broadcasting pact code to node #" <> tshow i <> " at " <> rpc) (Just code)
+  log ("Broadcasting pact code to node #" <> tshow i <> " at " <> rpc) (Just $ tshow code)
   nonce <- get
   modify (+1)
   broadcastTransaction rpc $ tshow $ PactTransaction nonce code
@@ -407,7 +419,10 @@ runPactTransaction hook accept reject rs hx = rejectOnError $ do
 
   log (hook <> " transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
 
-  r <- eval $ _pactTransaction_code pt
+  r <- eval =<< case _pactTransaction_code pt of
+    PactCode_Text t -> pure t
+    PactCode_File f -> shelly $ Sh.readfile $ Sh.fromText f
+
   log "Pact result" (Just $ T.strip $ tshow $ Pact.pretty r)
 
   where
@@ -473,43 +488,3 @@ _UPSTREAM_ _ = id
 
 _TODO_ :: Text -> a -> a
 _TODO_ _ = id
-
-{- Pact code samples -}
-greetWorld :: Text
-greetWorld = [here|
-(module greet-world MODULE_ADMIN
-  "A smart contract to greet the world."
-
-  ; no-op module admin for example purposes.
-  ; in a real contract this could enforce a keyset, or
-  ; tally votes, etc.
-  (defcap MODULE_ADMIN () true)
-
-  (defschema message-schema
-    @doc "Message schema"
-    @model [(invariant (!= msg ""))]
-
-    msg:string)
-
-  (deftable
-    message:{message-schema})
-
-  (defun set-message
-    (
-      m:string
-    )
-    "Set the message that will be used next"
-    ; uncomment the following to make the model happy!
-    ; (enforce (!= m "") "set-message: must not be empty")
-    (write message "0" {"msg": m})
-  )
-
-  (defun greet ()
-    "Do the hello-world dance"
-    (with-default-read message "0" { "msg": "" } { "msg":= msg }
-      (format "Hello {}!" [msg])))
-)
-(create-table message)
-(set-message "world")
-(greet)
-|]
