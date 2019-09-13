@@ -13,7 +13,7 @@
 module Kadenamint where
 
 import Control.Concurrent                               (threadDelay)
-import Control.Concurrent.Async                         (async, forConcurrently_, withAsync)
+import Control.Concurrent.Async                         (async, cancel, forConcurrently_, withAsync)
 import Control.Concurrent.MVar                          (modifyMVar_, readMVar)
 import Control.Lens                                     (strict, view, _2, (&), (^.), (.~), (+~))
 import Control.Monad                                    ((>=>))
@@ -152,7 +152,7 @@ timelineCoinContract = withNetwork 3 $ \peers -> \case
 
     sleep 1
     n3 <- initExtraNode n0 3
-    liftIO $ void $ async $ launchNode peers n3
+    a3 <- liftIO $ async $ launchNode peers n3
 
     sleep 4
     broadcastPactFile n1 "pact/coin-contract/coin.repl"
@@ -181,11 +181,42 @@ timelineCoinContract = withNetwork 3 $ \peers -> \case
       |]
 
     sleep 3
-    broadcastPactText n3
+    broadcastPactText n0
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
       |]
+
+    sleep 2
+    liftIO $ cancel a3
+    log "Taking down node 3" Nothing
+
+    sleep 3
+    broadcastPactText n0
+      [here|
+           (use coin)
+
+           (env-data { "k1" : ["keys1"], "k2": ["keys2"], "k3": ["keys3"] })
+           (env-keys ["keys1", "keys2", "keys3", "keys4"])
+           (define-keyset 'k1 (read-keyset "k1"))
+           (define-keyset 'k2 (read-keyset "k2"))
+           (define-keyset 'k3 (read-keyset "k3"))
+           (test-capability (TRANSFER))
+
+           (debit 'k3 0.5)
+           (credit 'k2 (read-keyset 'k2) 0.5)
+      |]
+
+    sleep 3
+    broadcastPactText n0
+      [here|
+           (use coin)
+           { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
+      |]
+
+    sleep 3
+    void $ liftIO $ async $ launchNode peers n3
+
   _ -> impossible
 
 timelineHelloWorld :: IO ()
