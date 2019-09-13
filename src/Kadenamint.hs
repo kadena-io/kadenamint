@@ -27,7 +27,9 @@ import Data.ByteArray.Encoding                          (Base(Base16), convertTo
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
 import Data.Default                                     (Default(..))
+import Data.Foldable                                    (for_, toList)
 import Data.Functor                                     (void)
+import Data.List.NonEmpty                               (NonEmpty(..), head)
 import Data.String                                      (IsString)
 import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
@@ -42,7 +44,7 @@ import System.Console.ANSI                              (SGR(..), ConsoleLayer(.
 import System.Which                                     (staticWhich)
 import Text.Read as T                                   (readMaybe)
 
-import Prelude                                          hiding (log)
+import Prelude                                          hiding (head, log)
 
 import Data.ByteArray.HexString                         (HexString(..))
 import Network.ABCI.Server                              (serveAppWith)
@@ -90,11 +92,19 @@ abciEnv nid = Env
       sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " | " <> x
   }
 
-initNode :: MonadIO m => Int -> m InitializedNode
-initNode i = shelly $ do
+initNode :: MonadIO m => Maybe InitializedNode -> Int -> m InitializedNode
+initNode preExistingNode i = shelly $ do
   void $ tendermint (mkGlobalFlags i) "init" []
-  cp (genesisFile 0) (configDir i)
-  pure $ mkInitializedNode i
+  let n = mkInitializedNode i
+  for_ preExistingNode $ \en ->
+    cp (genesisFile en) (configDir n)
+  pure n
+
+initStandaloneNode :: MonadIO m => Int -> m InitializedNode
+initStandaloneNode = initNode Nothing
+
+initExtraNode :: MonadIO m => InitializedNode -> Int -> m InitializedNode
+initExtraNode = initNode . Just
 
 launchNode :: MonadIO m => [(Int, Text)] -> InitializedNode -> m ()
 launchNode persistentPeers n = void $ do
@@ -105,10 +115,10 @@ launchNode persistentPeers n = void $ do
       log ("Node " <> tshow i <> " will be launched") Nothing
       shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags persistentPeers i)
 
-initNetwork :: MonadIO m => Int -> m [InitializedNode]
+initNetwork :: MonadIO m => Int -> m (NonEmpty InitializedNode)
 initNetwork size = do
   void $ shelly $ tendermintNetwork mkNetworkFlags
-  pure $ mkInitializedNode <$> [0..size-1]
+  pure $ fmap mkInitializedNode $ 0 :| [1..size-1]
 
 runEverything :: IO ()
 runEverything = do
@@ -122,21 +132,22 @@ runEverything = do
       pure res
 
   genesisNodes <- flip runReaderT (coreEnv Nothing) resetNetwork
+  let n0 = head genesisNodes
 
-  peers <- for genesisNodes $ \gn -> do
+  peers <- fmap toList $ for genesisNodes $ \gn -> do
     ni <- shelly $ silently $ tendermintNodeId gn
     pure (_initializedNode_index gn, T.strip ni)
 
-  withAsync (runTimeline broadcastEnv $ timelineGreet peers) $ \_ -> do
+  withAsync (runTimeline broadcastEnv $ timelineGreet n0 peers) $ \_ -> do
     forConcurrently_ genesisNodes (launchNode peers)
 
 type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
 
-timelineGreet :: Timeline m => [(Int, Text)] -> m ()
-timelineGreet peers = do
+timelineGreet :: Timeline m => InitializedNode -> [(Int, Text)] -> m ()
+timelineGreet n0 peers = do
   sleep 3 *> broadcastPactTransaction 0 greetWorld
   sleep 2 *> broadcastPactTransaction 1 "(greet-world.set-message \"hello\")"
-  sleep 1 *> initNode 3 >>= liftIO . void . async . launchNode peers
+  sleep 1 *> initExtraNode n0 3 >>= liftIO . void . async . launchNode peers
   sleep 3 *> broadcastPactTransaction 3 "(greet-world.greet)"
 
 timelineRepl :: Timeline m => m ()
@@ -256,11 +267,11 @@ mkNodeFlags peers i = NodeFlags
   where
     ps = flip fmap peers $ \(i', pid) -> (pid, mkP2PAddress i')
 
-genesisFile :: Int -> Sh.FilePath
-genesisFile i = configDir i </> ("genesis.json" :: Text)
+genesisFile :: InitializedNode -> Sh.FilePath
+genesisFile n = configDir n </> ("genesis.json" :: Text)
 
-configDir :: Int -> Sh.FilePath
-configDir i = mkNodeHomePath i </> ("config" :: Text)
+configDir :: InitializedNode -> Sh.FilePath
+configDir n = _initializedNode_home n </> ("config" :: Text)
 
 tendermintPath :: Sh.FilePath
 tendermintPath = Sh.fromText $ T.pack $(staticWhich "tendermint")
