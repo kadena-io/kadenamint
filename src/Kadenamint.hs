@@ -30,6 +30,7 @@ import Data.Default                                     (Default(..))
 import Data.Foldable                                    (for_)
 import Data.Functor                                     (void)
 import Data.String                                      (IsString)
+import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -116,7 +117,7 @@ initNetwork size = do
   pure $ fmap mkInitializedNode $ [0..size-1]
 
 runEverything :: IO ()
-runEverything = timelineHelloWorld
+runEverything = timelineCoinContract
 
 withNetwork
   :: Int
@@ -142,6 +143,50 @@ withNetwork size f = do
     forConcurrently_ genesisNodes (launchNode peers)
 
 type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
+
+timelineCoinContract :: IO ()
+timelineCoinContract = withNetwork 3 $ \peers -> \case
+  [n0, n1, n2] -> do
+    sleep 3
+    broadcastPactFile n0 "pact/coin-contract/coin.pact"
+
+    sleep 1
+    n3 <- initExtraNode n0 3
+    liftIO $ void $ async $ launchNode peers n3
+
+    sleep 4
+    broadcastPactFile n1 "pact/coin-contract/coin.repl"
+
+    sleep 3
+    broadcastPactText n2
+      [here|
+           (use coin)
+           { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
+      |]
+
+    sleep 3
+    broadcastPactText n3
+      [here|
+           (use coin)
+
+           (env-data { "k1" : ["keys1"], "k2": ["keys2"], "k3": ["keys3"] })
+           (env-keys ["keys1", "keys2", "keys3", "keys4"])
+           (define-keyset 'k1 (read-keyset "k1"))
+           (define-keyset 'k2 (read-keyset "k2"))
+           (define-keyset 'k3 (read-keyset "k3"))
+           (test-capability (TRANSFER))
+
+           (debit 'k3 0.5)
+           (credit 'k1 (read-keyset 'k1) 0.5)
+      |]
+
+    sleep 3
+    broadcastPactText n3
+      [here|
+           (use coin)
+           { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
+      |]
+  _ -> impossible
 
 timelineHelloWorld :: IO ()
 timelineHelloWorld = withNetwork 3 $ \peers -> \case
