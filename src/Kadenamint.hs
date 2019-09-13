@@ -109,7 +109,7 @@ initExtraNode = initNode . Just
 launchNode :: MonadIO m => [(Int, Text)] -> InitializedNode -> m ()
 launchNode persistentPeers n = void $ do
   let i = _initializedNode_index n
-  liftIO $ withAsync (runABCI i) $ \_ -> do
+  liftIO $ withAsync (runABCI i) $ \_ ->
     flip runReaderT (coreEnv $ Just i) $ do
       liftIO $ threadDelay $ seconds i `div` 10
       log ("Node " <> tshow i <> " will be launched") Nothing
@@ -138,7 +138,7 @@ runEverything = do
     ni <- shelly $ silently $ tendermintNodeId gn
     pure (_initializedNode_index gn, T.strip ni)
 
-  withAsync (runTimeline broadcastEnv $ timelineGreet n0 peers) $ \_ -> do
+  withAsync (runTimeline broadcastEnv $ timelineGreet n0 peers) $ \_ ->
     forConcurrently_ genesisNodes (launchNode peers)
 
 type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
@@ -206,7 +206,7 @@ data InitializedNode = InitializedNode
 type Address = Text
 type Peer = (Text, Address)
 
-data GlobalFlags = GlobalFlags
+newtype GlobalFlags = GlobalFlags
   { _globalFlags_home :: Text
   }
 
@@ -379,7 +379,7 @@ withPactRollback rs action = do
 
   where
     snapshotPactState = liftIO $ do
-      libState <- readMVar $ rs ^. Pact.rEnv ^. Pact.eePactDbVar
+      libState <- readMVar $ rs ^. Pact.rEnv . Pact.eePactDbVar
       let dbEnvVar = libState ^. Pact.rlsPure
       oldDb <- view Pact.db <$> readMVar dbEnvVar
       pure (dbEnvVar, oldDb)
@@ -406,7 +406,7 @@ runPactTransaction hook accept reject rs hx = rejectOnError $ do
       Just p -> Right p
 
     eval code = withExceptT (\err -> ("Pact error", Just $ T.pack err))
-      $ ExceptT $ liftIO $ (evalStateT (Pact.evalRepl' $ T.unpack code) rs)
+      $ ExceptT $ liftIO $ evalStateT (Pact.evalRepl' $ T.unpack code) rs
 
     rejectOnError = runExceptT >=> \case
       Left (h,b) -> log h b *> reject
@@ -427,7 +427,7 @@ tshow = T.pack . show
 log :: (MonadIO m, MonadReader Env m) => Text -> Maybe Text -> m ()
 log header body = do
   p <- asks _env_printer
-  liftIO $ putStrLn $ T.unpack $ p $ header <> maybe "" (\b -> ":\n" <> T.unlines (fmap ("  " <>) $ T.lines b)) body
+  liftIO $ putStrLn $ T.unpack $ p $ header <> maybe "" (\b -> ":\n" <> T.unlines (("  " <>) <$> T.lines b)) body
 
 sgrify :: [SGR] -> Text -> Text
 sgrify codes txt = mconcat
