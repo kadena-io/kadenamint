@@ -27,9 +27,8 @@ import Data.ByteArray.Encoding                          (Base(Base16), convertTo
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
 import Data.Default                                     (Default(..))
-import Data.Foldable                                    (for_, toList)
+import Data.Foldable                                    (for_)
 import Data.Functor                                     (void)
-import Data.List.NonEmpty                               (NonEmpty(..), head)
 import Data.String                                      (IsString)
 import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
@@ -59,9 +58,6 @@ import qualified Pact.Types.Pretty as Pact
 import qualified Pact.Types.Runtime as Pact
 
 {- Process orchestration -}
-genesisNetworkSize :: Int
-genesisNetworkSize = 3
-
 newtype Env = Env
   { _env_printer :: Text -> Text
   }
@@ -115,45 +111,58 @@ launchNode persistentPeers n = void $ do
       log ("Node " <> tshow i <> " will be launched") Nothing
       shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags persistentPeers i)
 
-initNetwork :: MonadIO m => Int -> m (NonEmpty InitializedNode)
+initNetwork :: MonadIO m => Int -> m [InitializedNode]
 initNetwork size = do
-  void $ shelly $ tendermintNetwork mkNetworkFlags
-  pure $ fmap mkInitializedNode $ 0 :| [1..size-1]
+  void $ shelly $ tendermintNetwork $ mkNetworkFlags size
+  pure $ fmap mkInitializedNode $ [0..size-1]
 
 runEverything :: IO ()
-runEverything = do
+runEverything = timelineGreet
+
+withNetwork
+  :: Int
+  -> ([(Int, Text)] -> [InitializedNode] -> StateT Int (ReaderT Env IO) ())
+  -> IO ()
+withNetwork size f = do
   let
-    deleteNetwork = run_ "rm" ["-rf", _networkFlags_output mkNetworkFlags]
+    deleteNetwork = run_ "rm" ["-rf", _networkFlags_output $ mkNetworkFlags size]
 
     resetNetwork = do
       shelly deleteNetwork
-      res <- initNetwork genesisNetworkSize
+      res <- initNetwork size
       log "Network has been reset" Nothing
       pure res
 
   genesisNodes <- flip runReaderT (coreEnv Nothing) resetNetwork
-  let n0 = head genesisNodes
 
-  peers <- fmap toList $ for genesisNodes $ \gn -> do
+  peers <- for genesisNodes $ \gn -> do
     ni <- shelly $ silently $ tendermintNodeId gn
     pure (_initializedNode_index gn, T.strip ni)
 
-  withAsync (runTimeline broadcastEnv $ timelineGreet n0 peers) $ \_ ->
+  withAsync (runTimeline broadcastEnv $ f peers genesisNodes) $ \_ ->
     forConcurrently_ genesisNodes (launchNode peers)
 
 type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
 
-timelineGreet :: Timeline m => InitializedNode -> [(Int, Text)] -> m ()
-timelineGreet n0 peers = do
-  sleep 3 *> broadcastPactTransaction 0 greetWorld
-  sleep 2 *> broadcastPactTransaction 1 "(greet-world.set-message \"hello\")"
-  sleep 1 *> initExtraNode n0 3 >>= liftIO . void . async . launchNode peers
-  sleep 3 *> broadcastPactTransaction 3 "(greet-world.greet)"
+timelineGreet :: IO ()
+timelineGreet = withNetwork 3 $ \peers -> \case
+  [n0, n1, _n2] -> do
+    sleep 3 *> broadcastPactTransaction n0 greetWorld
+    sleep 2 *> broadcastPactTransaction n1 "(greet-world.set-message \"hello\")"
 
-timelineRepl :: Timeline m => m ()
-timelineRepl = do
-  sleep 3 *> broadcastPactTransaction 0 "(+ 1 2)"
-  sleep 2 *> broadcastPactTransaction 1 "(+ 2 3)"
+    sleep 1
+    n3 <- initExtraNode n0 3
+    liftIO $ void $ async $ launchNode peers n3
+
+    sleep 3 *> broadcastPactTransaction n3 "(greet-world.greet)"
+  _ -> impossible
+
+timelineRepl :: IO ()
+timelineRepl = withNetwork 2 $ \_ -> \case
+  [n0, n1] -> do
+    sleep 3 *> broadcastPactTransaction n0 "(+ 1 2)"
+    sleep 2 *> broadcastPactTransaction n1 "(+ 2 3)"
+  _ -> impossible
 
 runTimeline :: Env -> StateT Int (ReaderT Env IO) a -> IO a
 runTimeline env = flip runReaderT env . flip evalStateT 0
@@ -164,9 +173,11 @@ data PactTransaction = PactTransaction
   , _pactTransaction_code  :: Text
   } deriving (Eq, Ord, Read, Show)
 
-broadcastPactTransaction :: Timeline m => Int -> Text -> m ()
-broadcastPactTransaction i code = do
-  let rpc = mkRPCAddress i
+broadcastPactTransaction :: Timeline m => InitializedNode -> Text -> m ()
+broadcastPactTransaction n code = do
+  let
+    i = _initializedNode_index n
+    rpc = mkRPCAddress i
   log ("Broadcasting pact code to node #" <> tshow i <> " at " <> rpc) (Just code)
   nonce <- get
   modify (+1)
@@ -226,10 +237,12 @@ data NodeFlags = NodeFlags
   , _nodeFlags_emptyBlocks :: Bool
   }
 
-mkNetworkFlags :: NetworkFlags
-mkNetworkFlags = NetworkFlags
-  { _networkFlags_validators    = genesisNetworkSize
-  , _networkFlags_output        = "./.tendermint"
+mkNetworkHome :: Text
+mkNetworkHome = "./.tendermint"
+mkNetworkFlags :: Int -> NetworkFlags
+mkNetworkFlags size = NetworkFlags
+  { _networkFlags_validators    = size
+  , _networkFlags_output        = mkNetworkHome
   , _networkFlags_populatePeers = True
   }
 
@@ -237,7 +250,7 @@ mkInitializedNode :: Int -> InitializedNode
 mkInitializedNode = InitializedNode <*> mkNodeHomePath
 
 mkNodeHomePath :: Int -> Text
-mkNodeHomePath i = _networkFlags_output mkNetworkFlags <> "/node" <> tshow i
+mkNodeHomePath i = mkNetworkHome <> "/node" <> tshow i
 
 mkGlobalFlags :: Int -> GlobalFlags
 mkGlobalFlags i = GlobalFlags { _globalFlags_home = mkNodeHomePath i }
@@ -439,8 +452,11 @@ sgrify codes txt = mconcat
 seconds :: Int -> Int
 seconds = (*1e6)
 
-fatal :: m ()
+fatal :: a
 fatal = error "fatal error"
+
+impossible :: a
+impossible = error "the 'impossible' has happened"
 
 doubleQuotes :: (IsString a, Semigroup a) => a -> a
 doubleQuotes t = "\"" <> t <> "\""
