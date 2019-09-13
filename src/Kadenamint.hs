@@ -116,7 +116,7 @@ initNetwork size = do
   pure $ fmap mkInitializedNode $ [0..size-1]
 
 runEverything :: IO ()
-runEverything = timelineGreet
+runEverything = timelineHelloWorld
 
 withNetwork
   :: Int
@@ -143,17 +143,17 @@ withNetwork size f = do
 
 type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
 
-timelineGreet :: IO ()
-timelineGreet = withNetwork 3 $ \peers -> \case
+timelineHelloWorld :: IO ()
+timelineHelloWorld = withNetwork 3 $ \peers -> \case
   [n0, n1, _n2] -> do
     sleep 3 *> broadcastPactFile n0 "pact/hello-world.pact"
-    sleep 2 *> broadcastPactText n1 "(greet-world.set-message \"hello\")"
+    sleep 2 *> broadcastPactText n1 "(hello-world.set-message \"hello\")"
 
     sleep 1
     n3 <- initExtraNode n0 3
     liftIO $ void $ async $ launchNode peers n3
 
-    sleep 3 *> broadcastPactText n3 "(greet-world.greet)"
+    sleep 3 *> broadcastPactText n3 "(hello-world.greet)"
   _ -> impossible
 
 timelineRepl :: IO ()

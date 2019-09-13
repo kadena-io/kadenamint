@@ -1,4 +1,15 @@
-(module greet-world MODULE_ADMIN
+;;
+;; "Hello, world!" smart contract/module
+;;
+;; To try it out, click "Load into REPL" and type into the repl:
+;; (hello-world.set-message "universe")
+;; (hello-world.greet)
+;;
+;; Check lines 21 and 34 to play with Formal Verification
+;;
+
+;; Define the module.
+(module hello-world MODULE_ADMIN
   "A smart contract to greet the world."
 
   ; no-op module admin for example purposes.
@@ -30,6 +41,8 @@
     (with-default-read message "0" { "msg": "" } { "msg":= msg }
       (format "Hello {}!" [msg])))
 )
+
 (create-table message)
+
 (set-message "world")
 (greet)
