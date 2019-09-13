@@ -190,7 +190,7 @@ timelineCoinContract = withNetwork 3 $ \peers -> \case
 
     sleep 2
     liftIO $ cancel a3
-    log "Taking down node 3" Nothing
+    flip runReaderT (coreEnv $ Just 3) $ log "Shutting down" Nothing
 
     sleep 3
     broadcastPactText n0
