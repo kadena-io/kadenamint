@@ -13,6 +13,8 @@ let
 
   tendermint = recentNixpkgs.tendermint;
 
+  purifyEnvironment = builtins.filterSource (path: type: !recentNixpkgs.lib.hasPrefix ".ghc.environment" (baseNameOf path));
+
 in rp.project ({ pkgs, hackGet, ... }:
   let
     hs-abci = hackGet ./dep/hs-abci;
@@ -24,7 +26,7 @@ in rp.project ({ pkgs, hackGet, ... }:
 
     packages = {
       inherit pact which;
-      kadenamint = ./.;
+      kadenamint = purifyEnvironment ./.;
     };
 
     shells = {
