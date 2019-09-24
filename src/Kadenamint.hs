@@ -259,7 +259,7 @@ broadcastPactText n = broadcastPact n . PactCode_Text
 
 broadcastPactFile :: Timeline m => InitializedNode -> Text -> m ()
 broadcastPactFile n path = do
-  p <- shelly $ Sh.absPath $ Sh.fromText path
+  p <- shelly $ Sh.absPath $ Sh.fromText $ _ASSUME_ "local network" path
   broadcastPact n $ PactCode_File $ Sh.toTextIgnore p
 
 broadcastPact :: Timeline m => InitializedNode -> PactCode -> m ()
@@ -571,3 +571,6 @@ _UPSTREAM_ _ = id
 
 _TODO_ :: Text -> a -> a
 _TODO_ _ = id
+
+_ASSUME_ :: Text -> a -> a
+_ASSUME_ _ = id
