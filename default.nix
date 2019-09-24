@@ -13,7 +13,10 @@ let
 
   tendermint = recentNixpkgs.tendermint;
 
-  purifyEnvironment = builtins.filterSource (path: type: !recentNixpkgs.lib.hasPrefix ".ghc.environment" (baseNameOf path));
+  purifyEnvironment =
+    let isImpure = p: recentNixpkgs.lib.hasPrefix ".ghc.environment" p
+                      || builtins.elem p [".git" "result" "dist-newstyle"];
+    in builtins.filterSource (path: type: !isImpure (baseNameOf path));
 
 in rp.project ({ pkgs, hackGet, ... }:
   let
