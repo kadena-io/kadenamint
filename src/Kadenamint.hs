@@ -1,5 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric#-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumDecimals #-}
@@ -26,17 +27,18 @@ import Data.Binary.Builder                              (toLazyByteString)
 import Data.Bool                                        (bool)
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
 import Data.Colour.SRGB                                 (Colour, sRGB24)
-import Data.Conduit.Network                             (HostPreference, ServerSettings, serverSettings)
+import Data.Conduit.Network                             (ServerSettings, serverSettings)
 import Data.Default                                     (Default(..))
 import Data.Foldable                                    (for_)
 import Data.Functor                                     (void)
-import Data.String                                      (IsString)
+import Data.String                                      (IsString(..))
 import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
 import Data.Traversable                                 (for)
+import GHC.Generics                                     (Generic)
 import Network.HTTP.Types                               (encodePath)
 import Shelly                                           (Sh, cp, shelly, silently, run, run_, (</>))
 import qualified Shelly as Sh
@@ -247,12 +249,12 @@ runTimeline env = flip runReaderT env . flip evalStateT 0
 data PactTransaction = PactTransaction
   { _pactTransaction_nonce :: Int
   , _pactTransaction_code  :: PactCode
-  } deriving (Eq, Ord, Read, Show)
+  } deriving (Eq, Ord, Read, Show, Generic)
 
 data PactCode
   = PactCode_Text Text
   | PactCode_File Text
-  deriving (Eq, Ord, Read, Show)
+  deriving (Eq, Ord, Read, Show, Generic)
 
 broadcastPactText :: Timeline m => InitializedNode -> Text -> m ()
 broadcastPactText n = broadcastPact n . PactCode_Text
@@ -301,30 +303,30 @@ toEndpoint = \case
 data InitializedNode = InitializedNode
   { _initializedNode_index :: Int
   , _initializedNode_home :: Text
-  }
+  } deriving (Eq, Ord, Read, Show, Generic)
 
 type Address = Text
 type Peer = (Text, Address)
 
 newtype GlobalFlags = GlobalFlags
   { _globalFlags_home :: Text
-  }
+  } deriving (Eq, Ord, Read, Show, Generic)
 
 data NetworkFlags = NetworkFlags
   { _networkFlags_validators    :: Int
   , _networkFlags_output        :: Text
   , _networkFlags_populatePeers :: Bool
-  }
+  } deriving (Eq, Ord, Read, Show, Generic)
 
 data NodeFlags = NodeFlags
   { _nodeFlags_global :: GlobalFlags
-  , _nodeFlags_app :: forall a. HostPort a
+  , _nodeFlags_app :: HostPort
   , _nodeFlags_p2p :: Address
   , _nodeFlags_rpc :: Address
   , _nodeFlags_peers :: [Peer]
   , _nodeFlags_privatePeers :: [Peer]
   , _nodeFlags_emptyBlocks :: Bool
-  }
+  } deriving (Eq, Ord, Read, Show, Generic)
 
 mkNetworkHome :: Text
 mkNetworkHome = "./.tendermint"
@@ -354,7 +356,7 @@ mkRPCAddress i = mkAddress $ defaultTendermintRPCHostPort & _2 +~ mkPortOffset i
 mkP2PAddress :: Int -> Address
 mkP2PAddress i = mkAddress $ defaultTendermintP2PHostPort & _2 +~ mkPortOffset i
 
-mkABCIHostPort :: Int -> HostPort a
+mkABCIHostPort :: Int -> HostPort
 mkABCIHostPort i = defaultABCIAppHostPort & _2 +~ mkPortOffset i
 
 mkNodeFlags :: [(Int, Text)] -> Int -> NodeFlags
@@ -525,13 +527,13 @@ runPactTransaction logParsed logEvaluated accept reject rs hx = rejectOnError $ 
       Right () -> accept
 
 {- Utils -}
-type HostPort a = IsString a => (a, Int)
+type HostPort = (Text, Int)
 
-mkAddress :: HostPort Text -> Text
+mkAddress :: HostPort -> Text
 mkAddress (host, port) = host <> ":" <> tshow port
 
-mkServerSettings :: HostPort HostPreference -> ServerSettings
-mkServerSettings (host, port) = serverSettings port host
+mkServerSettings :: HostPort -> ServerSettings
+mkServerSettings (host, port) = serverSettings port $ fromString $ T.unpack $ host
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
