@@ -100,6 +100,7 @@ initExtraNode :: MonadIO m => InitializedNode -> Int -> m InitializedNode
 initExtraNode preExistingNode i = shelly $ do
   n <- initStandaloneNode (_initializedNode_networkRoot preExistingNode) i
   cp (genesisFile preExistingNode) (configDir n)
+    & _ASSUME_ "other files unwanted"
   pure n
 
 launchNode :: MonadIO m => [(Int, Text)] -> InitializedNode -> m ()
