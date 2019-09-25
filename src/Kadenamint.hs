@@ -112,10 +112,10 @@ launchNode persistentPeers n = void $ do
       log "Launching" Nothing
       shelly $ tendermintNode (mkGlobalFlags root i) (mkNodeFlags root persistentPeers i)
 
-initNetwork :: MonadIO m => NetworkFlags -> m [InitializedNode]
-initNetwork nf = do
-  void $ shelly $ tendermintNetwork nf
-  pure $ mkInitializedNode (_networkFlags_output nf) <$> [0 .. _networkFlags_validators nf -1]
+initNetwork :: MonadIO m => Text -> Int -> m [InitializedNode]
+initNetwork root size  = do
+  void $ shelly $ tendermintNetwork $ mkNetworkFlags root size
+  pure $ mkInitializedNode root <$> [0 .. size-1]
 
 runEverything :: IO ()
 runEverything = timelineCoinContract
@@ -128,10 +128,7 @@ withNetwork
   -> (Text -> [(Int, Text)] -> [InitializedNode] -> StateT Int (ReaderT Env IO) ())
   -> IO ()
 withNetwork size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
-  let
-    nf = mkNetworkFlags root size
-
-  genesisNodes <- initNetwork nf
+  genesisNodes <- initNetwork root size
 
   flip runReaderT (coreEnv Nothing) $
     log ("Network of size " <> tshow size <> " has been setup at " <> root) Nothing
@@ -539,7 +536,7 @@ mkAddress :: HostPort -> Text
 mkAddress (host, port) = host <> ":" <> tshow port
 
 mkServerSettings :: HostPort -> ServerSettings
-mkServerSettings (host, port) = serverSettings port $ fromString $ T.unpack $ host
+mkServerSettings (host, port) = serverSettings port $ fromString $ T.unpack host
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
