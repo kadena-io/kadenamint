@@ -115,7 +115,7 @@ launchNode persistentPeers n = void $ do
 initNetwork :: MonadIO m => Int -> m [InitializedNode]
 initNetwork size = do
   void $ shelly $ tendermintNetwork $ mkNetworkFlags size
-  pure $ fmap mkInitializedNode $ [0..size-1]
+  pure $ fmap mkInitializedNode [0..size-1]
 
 runEverything :: IO ()
 runEverything = timelineCoinContract
@@ -328,6 +328,7 @@ data NodeFlags = NodeFlags
 
 mkNetworkHome :: Text
 mkNetworkHome = "./.tendermint"
+
 mkNetworkFlags :: Int -> NetworkFlags
 mkNetworkFlags size = NetworkFlags
   { _networkFlags_validators    = size
