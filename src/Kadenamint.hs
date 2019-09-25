@@ -10,6 +10,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Kadenamint where
 
@@ -29,7 +30,6 @@ import Data.ByteArray.Encoding                          (Base(Base16), convertTo
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (ServerSettings, serverSettings)
 import Data.Default                                     (Default(..))
-import Data.Foldable                                    (for_)
 import Data.Functor                                     (void)
 import Data.String                                      (IsString(..))
 import Data.String.Here.Uninterpolated                  (here)
@@ -40,7 +40,7 @@ import qualified Data.Text.Encoding.Error as T          hiding (replace)
 import Data.Traversable                                 (for)
 import GHC.Generics                                     (Generic)
 import Network.HTTP.Types                               (encodePath)
-import Shelly                                           (Sh, cp, shelly, silently, run, run_, (</>))
+import Shelly                                           (Sh, cp, shelly, silently, run, run_, toTextIgnore, withTmpDir, (</>))
 import qualified Shelly as Sh
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..), setSGRCode)
 import System.Which                                     (staticWhich)
@@ -91,64 +91,62 @@ abciEnv nid = Env
       sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " | " <> x
   }
 
-initNode :: MonadIO m => Maybe InitializedNode -> Int -> m InitializedNode
-initNode preExistingNode i = shelly $ do
-  void $ tendermint (mkGlobalFlags i) "init" []
-  let n = mkInitializedNode i
-  for_ preExistingNode $ \en ->
-    cp (genesisFile en) (configDir n)
-  pure n
-
-initStandaloneNode :: MonadIO m => Int -> m InitializedNode
-initStandaloneNode = initNode Nothing
+initStandaloneNode :: MonadIO m => Text -> Int -> m InitializedNode
+initStandaloneNode root i = shelly $ do
+  void $ tendermint (mkGlobalFlags root i) "init" []
+  pure $ mkInitializedNode root i
 
 initExtraNode :: MonadIO m => InitializedNode -> Int -> m InitializedNode
-initExtraNode = initNode . Just
+initExtraNode preExistingNode i = shelly $ do
+  n <- initStandaloneNode (_initializedNode_networkRoot preExistingNode) i
+  cp (genesisFile preExistingNode) (configDir n)
+  pure n
 
 launchNode :: MonadIO m => [(Int, Text)] -> InitializedNode -> m ()
 launchNode persistentPeers n = void $ do
-  let i = _initializedNode_index n
+  let i    = _initializedNode_index n
+      root = _initializedNode_networkRoot n
   liftIO $ withAsync (runABCI i) $ \_ ->
     flip runReaderT (coreEnv $ Just i) $ do
       liftIO $ threadDelay $ seconds i `div` 10
       log "Launching" Nothing
-      shelly $ tendermintNode (mkGlobalFlags i) (mkNodeFlags persistentPeers i)
+      shelly $ tendermintNode (mkGlobalFlags root i) (mkNodeFlags root persistentPeers i)
 
-initNetwork :: MonadIO m => Int -> m [InitializedNode]
-initNetwork size = do
-  void $ shelly $ tendermintNetwork $ mkNetworkFlags size
-  pure $ fmap mkInitializedNode [0..size-1]
+initNetwork :: MonadIO m => NetworkFlags -> m [InitializedNode]
+initNetwork nf = do
+  void $ shelly $ tendermintNetwork nf
+  pure $ mkInitializedNode (_networkFlags_output nf) <$> [0 .. _networkFlags_validators nf -1]
 
 runEverything :: IO ()
 runEverything = timelineCoinContract
 
+deleteNetwork :: InitializedNode -> Sh ()
+deleteNetwork n = run_ "rm" ["-rf", _initializedNode_networkRoot n]
+
 withNetwork
   :: Int
-  -> ([(Int, Text)] -> [InitializedNode] -> StateT Int (ReaderT Env IO) ())
+  -> (Text -> [(Int, Text)] -> [InitializedNode] -> StateT Int (ReaderT Env IO) ())
   -> IO ()
-withNetwork size f = do
+withNetwork size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
   let
-    deleteNetwork = run_ "rm" ["-rf", _networkFlags_output $ mkNetworkFlags size]
+    nf = mkNetworkFlags root size
 
-    resetNetwork = do
-      shelly deleteNetwork
-      res <- initNetwork size
-      log "Network has been reset" Nothing
-      pure res
+  genesisNodes <- initNetwork nf
 
-  genesisNodes <- flip runReaderT (coreEnv Nothing) resetNetwork
+  flip runReaderT (coreEnv Nothing) $
+    log ("Network of size " <> tshow size <> " has been setup at " <> root) Nothing
 
   peers <- for genesisNodes $ \gn -> do
     ni <- shelly $ silently $ tendermintNodeId gn
     pure (_initializedNode_index gn, T.strip ni)
 
-  withAsync (runTimeline broadcastEnv $ f peers genesisNodes) $ \_ ->
+  liftIO $ withAsync (runTimeline broadcastEnv $ f root peers genesisNodes) $ \_ ->
     forConcurrently_ genesisNodes (launchNode peers)
 
 type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
 
 timelineCoinContract :: IO ()
-timelineCoinContract = withNetwork 3 $ \peers -> \case
+timelineCoinContract = withNetwork 3 $ \_ peers -> \case
   [n0, n1, n2] -> do
     sleep 3
     broadcastPactFile n0 "pact/coin-contract/coin.pact"
@@ -223,7 +221,7 @@ timelineCoinContract = withNetwork 3 $ \peers -> \case
   _ -> impossible
 
 timelineHelloWorld :: IO ()
-timelineHelloWorld = withNetwork 3 $ \peers -> \case
+timelineHelloWorld = withNetwork 3 $ \_ peers -> \case
   [n0, n1, _n2] -> do
     sleep 3 *> broadcastPactFile n0 "pact/hello-world.pact"
     sleep 2 *> broadcastPactText n1 "(hello-world.set-message \"hello\")"
@@ -236,7 +234,7 @@ timelineHelloWorld = withNetwork 3 $ \peers -> \case
   _ -> impossible
 
 timelineRepl :: IO ()
-timelineRepl = withNetwork 2 $ \_ -> \case
+timelineRepl = withNetwork 2 $ \_ _ -> \case
   [n0, n1] -> do
     sleep 3 *> broadcastPactText n0 "(+ 1 2)"
     sleep 2 *> broadcastPactText n1 "(+ 2 3)"
@@ -301,8 +299,9 @@ toEndpoint = \case
 
 {- Tendermint CLI -}
 data InitializedNode = InitializedNode
-  { _initializedNode_index :: Int
-  , _initializedNode_home :: Text
+  { _initializedNode_index       :: Int
+  , _initializedNode_networkRoot :: Text
+  , _initializedNode_home        :: Text
   } deriving (Eq, Ord, Read, Show, Generic)
 
 type Address = Text
@@ -328,24 +327,31 @@ data NodeFlags = NodeFlags
   , _nodeFlags_emptyBlocks :: Bool
   } deriving (Eq, Ord, Read, Show, Generic)
 
-mkNetworkHome :: Text
-mkNetworkHome = "./.tendermint"
-
-mkNetworkFlags :: Int -> NetworkFlags
-mkNetworkFlags size = NetworkFlags
+mkNetworkFlags :: Text -> Int -> NetworkFlags
+mkNetworkFlags networkRoot size = NetworkFlags
   { _networkFlags_validators    = size
-  , _networkFlags_output        = mkNetworkHome
+  , _networkFlags_output        = networkRoot
   , _networkFlags_populatePeers = True
   }
 
-mkInitializedNode :: Int -> InitializedNode
-mkInitializedNode = InitializedNode <*> mkNodeHomePath
+mkInitializedNode :: Text -> Int -> InitializedNode
+mkInitializedNode root i = InitializedNode
+  { _initializedNode_index = i
+  , _initializedNode_networkRoot = root
+  , _initializedNode_home = mkNodeHome i
+  }
 
-mkNodeHomePath :: Int -> Text
-mkNodeHomePath i = mkNetworkHome <> "/node" <> tshow i
+mkNodeHome :: Int -> Text
+mkNodeHome i = "node" <> tshow i
 
-mkGlobalFlags :: Int -> GlobalFlags
-mkGlobalFlags i = GlobalFlags { _globalFlags_home = mkNodeHomePath i }
+getNodePath :: InitializedNode -> Text
+getNodePath n = _initializedNode_networkRoot n <> "/" <> _initializedNode_home n
+
+mkNodePath :: Text -> Int -> Text
+mkNodePath root i = root <> "/" <> mkNodeHome i
+
+mkGlobalFlags :: Text -> Int -> GlobalFlags
+mkGlobalFlags root i = GlobalFlags { _globalFlags_home = mkNodePath root i }
 
 mkPortOffset :: Int -> Int
 mkPortOffset = (10 *)
@@ -359,9 +365,9 @@ mkP2PAddress i = mkAddress $ defaultTendermintP2PHostPort & _2 +~ mkPortOffset i
 mkABCIHostPort :: Int -> HostPort
 mkABCIHostPort i = defaultABCIAppHostPort & _2 +~ mkPortOffset i
 
-mkNodeFlags :: [(Int, Text)] -> Int -> NodeFlags
-mkNodeFlags peers i = NodeFlags
-  { _nodeFlags_global = mkGlobalFlags i
+mkNodeFlags :: Text -> [(Int, Text)] -> Int -> NodeFlags
+mkNodeFlags root peers i = NodeFlags
+  { _nodeFlags_global = mkGlobalFlags root i
   , _nodeFlags_app = mkABCIHostPort i
   , _nodeFlags_p2p = mkP2PAddress i
   , _nodeFlags_rpc = mkRPCAddress i
@@ -376,7 +382,7 @@ genesisFile :: InitializedNode -> Sh.FilePath
 genesisFile n = configDir n </> ("genesis.json" :: Text)
 
 configDir :: InitializedNode -> Sh.FilePath
-configDir n = _initializedNode_home n </> ("config" :: Text)
+configDir n = getNodePath n </> ("config" :: Text)
 
 tendermintPath :: Sh.FilePath
 tendermintPath = Sh.fromText $ T.pack $(staticWhich "tendermint")
@@ -412,7 +418,7 @@ tendermintNode gf nf = tendermint gf "node"
   ]
 
 tendermintNodeId :: InitializedNode -> Sh Text
-tendermintNodeId n = tendermint (mkGlobalFlags $ _initializedNode_index n) "show_node_id" []
+tendermintNodeId n = tendermint (mkGlobalFlags (_initializedNode_networkRoot n) (_initializedNode_index n)) "show_node_id" []
 
 {- Network addresses -}
 defaultTendermintP2PHostPort :: (Text, Int)
