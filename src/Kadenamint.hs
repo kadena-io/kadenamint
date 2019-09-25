@@ -91,20 +91,20 @@ abciEnv nid = Env
       sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " | " <> x
   }
 
-initStandaloneNode :: MonadIO m => Text -> Int -> m InitializedNode
-initStandaloneNode root i = shelly $ do
+initNode :: MonadIO m => Text -> Int -> m InitializedNode
+initNode root i = shelly $ do
   void $ tendermint (mkGlobalFlags root i) "init" []
   pure $ mkInitializedNode root i
 
-initExtraNode :: MonadIO m => InitializedNode -> Int -> m InitializedNode
-initExtraNode preExistingNode i = shelly $ do
-  n <- initStandaloneNode (_initializedNode_networkRoot preExistingNode) i
+initNodeInNetwork :: MonadIO m => InitializedNode -> Int -> m InitializedNode
+initNodeInNetwork preExistingNode i = shelly $ do
+  n <- initNode (_initializedNode_networkRoot preExistingNode) i
   cp (genesisFile preExistingNode) (configDir n)
     & _ASSUME_ "other files unwanted"
   pure n
 
-launchNode :: MonadIO m => [(Int, Text)] -> InitializedNode -> m ()
-launchNode persistentPeers n = void $ do
+runNode :: MonadIO m => [(Int, Text)] -> InitializedNode -> m ()
+runNode persistentPeers n = void $ do
   let i    = _initializedNode_index n
       root = _initializedNode_networkRoot n
   liftIO $ withAsync (runABCI i) $ \_ ->
@@ -139,7 +139,7 @@ withNetwork size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
     pure (_initializedNode_index gn, T.strip ni)
 
   liftIO $ withAsync (runTimeline broadcastEnv $ f root peers genesisNodes) $ \_ ->
-    forConcurrently_ genesisNodes (launchNode peers)
+    forConcurrently_ genesisNodes (runNode peers)
 
 type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
 
@@ -150,8 +150,8 @@ timelineCoinContract = withNetwork 3 $ \_ peers -> \case
     broadcastPactFile n0 "pact/coin-contract/coin.pact"
 
     sleep 1
-    n3 <- initExtraNode n0 3
-    a3 <- liftIO $ async $ launchNode peers n3
+    n3 <- initNodeInNetwork n0 3
+    a3 <- liftIO $ async $ runNode peers n3
 
     sleep 4
     broadcastPactFile n1 "pact/coin-contract/coin.repl"
@@ -214,7 +214,7 @@ timelineCoinContract = withNetwork 3 $ \_ peers -> \case
       |]
 
     sleep 3
-    void $ liftIO $ async $ launchNode peers n3
+    void $ liftIO $ async $ runNode peers n3
 
   _ -> impossible
 
@@ -225,8 +225,8 @@ timelineHelloWorld = withNetwork 3 $ \_ peers -> \case
     sleep 2 *> broadcastPactText n1 "(hello-world.set-message \"hello\")"
 
     sleep 1
-    n3 <- initExtraNode n0 3
-    liftIO $ void $ async $ launchNode peers n3
+    n3 <- initNodeInNetwork n0 3
+    liftIO $ void $ async $ runNode peers n3
 
     sleep 3 *> broadcastPactText n3 "(hello-world.greet)"
   _ -> impossible
