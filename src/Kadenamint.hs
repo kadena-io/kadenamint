@@ -15,7 +15,7 @@
 module Kadenamint where
 
 import Control.Concurrent                               (threadDelay)
-import Control.Concurrent.Async                         (async, cancel, forConcurrently_, withAsync)
+import Control.Concurrent.Async                         (Async, async, cancel, forConcurrently_, withAsync)
 import Control.Concurrent.MVar                          (modifyMVar_, readMVar)
 import Control.Lens                                     (strict, view, _2, (&), (^.), (.~), (+~))
 import Control.Monad                                    ((>=>))
@@ -102,15 +102,22 @@ initNodeInNetwork preExistingNode i = shelly $ do
     & _ASSUME_ "other files unwanted"
   pure n
 
-runNode :: MonadIO m => [InitializedNode] -> InitializedNode -> m ()
-runNode persistentPeers n = void $ do
+runNode :: MonadIO m => [InitializedNode] -> InitializedNode -> m LaunchedNode
+runNode ps n = fmap (LaunchedNode n) $ liftIO $ async $ runNodeSync ps n
+
+runNodeSync :: MonadIO m => [InitializedNode] -> InitializedNode -> m ()
+runNodeSync persistentPeers n = void $ do
   let i    = _initializedNode_index n
       root = _initializedNode_networkRoot n
+
   liftIO $ withAsync (runABCI i) $ \_ ->
     flip runReaderT (coreEnv $ Just i) $ do
       liftIO $ threadDelay $ seconds i `div` 10
       log "Launching" Nothing
       shelly $ tendermintNode (mkGlobalFlags root i) (mkNodeFlags root persistentPeers i)
+
+stopNode :: MonadIO m => LaunchedNode -> m ()
+stopNode = liftIO . cancel . _launchedNode_core
 
 initNetwork :: MonadIO m => Text -> Int -> m [InitializedNode]
 initNetwork root size = shelly $ do
@@ -134,7 +141,7 @@ withNetwork size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
     log ("Network of size " <> tshow size <> " has been setup at " <> root) Nothing
 
   liftIO $ withAsync (runTimeline broadcastEnv $ f root genesisNodes) $ \_ ->
-    forConcurrently_ genesisNodes (runNode genesisNodes)
+    forConcurrently_ genesisNodes (runNodeSync genesisNodes)
 
 type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
 
@@ -146,7 +153,7 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
 
     sleep 1
     n3 <- initNodeInNetwork n0 3
-    a3 <- liftIO $ async $ runNode peers n3
+    a3 <- runNode peers n3
 
     sleep 4
     broadcastPactFile n1 "pact/coin-contract/coin.repl"
@@ -182,7 +189,7 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
       |]
 
     sleep 2
-    liftIO $ cancel a3
+    stopNode a3
     flip runReaderT (coreEnv $ Just 3) $ log "Shutting down" Nothing
 
     sleep 3
@@ -209,7 +216,7 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
       |]
 
     sleep 3
-    void $ liftIO $ async $ runNode peers n3
+    void $ runNode peers n3
 
   _ -> impossible
 
@@ -221,7 +228,7 @@ timelineHelloWorld = withNetwork 3 $ \_ -> \case
 
     sleep 1
     n3 <- initNodeInNetwork n0 3
-    liftIO $ void $ async $ runNode peers n3
+    void $ runNode peers n3
 
     sleep 3 *> broadcastPactText n3 "(hello-world.greet)"
   _ -> impossible
@@ -297,6 +304,11 @@ data InitializedNode = InitializedNode
   , _initializedNode_home        :: Text
   , _initializedNode_peer        :: Peer
   } deriving (Eq, Ord, Read, Show, Generic)
+
+data LaunchedNode = LaunchedNode
+  { _launchedNode_dir :: InitializedNode
+  , _launchedNode_core :: Async ()
+  } deriving (Eq, Ord, Generic)
 
 type Address = Text
 type Peer = (Text, Address)
