@@ -141,8 +141,8 @@ initNetwork root size = shelly $ do
 runEverything :: IO ()
 runEverything = timelineCoinContract
 
-deleteNetwork :: InitializedNode -> Sh ()
-deleteNetwork n = run_ "rm" ["-rf", _initializedNode_networkRoot n]
+deleteNetwork :: InitializedNode -> IO ()
+deleteNetwork n = shelly $ run_ "rm" ["-rf", _initializedNode_networkRoot n]
 
 withNetwork
   :: Int
