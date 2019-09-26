@@ -31,6 +31,7 @@ import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (ServerSettings, serverSettings)
 import Data.Default                                     (Default(..))
 import Data.Functor                                     (void)
+import Data.IORef                                       (IORef, newIORef, readIORef, writeIORef)
 import Data.String                                      (IsString(..))
 import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
@@ -102,8 +103,23 @@ initNodeInNetwork preExistingNode i = shelly $ do
     & _ASSUME_ "other files unwanted"
   pure n
 
-runNode :: MonadIO m => [InitializedNode] -> InitializedNode -> m LaunchedNode
-runNode ps n = fmap (LaunchedNode n) $ liftIO $ async $ runNodeSync ps n
+stopNode :: MonadIO m => InitializedNode -> m ()
+stopNode n = liftIO $ do
+  let r = _initializedNode_running n
+  readIORef r >>= \case
+    Nothing -> putStrLn "Node is already stopped"
+    Just a -> do
+      cancel a
+      writeIORef r Nothing
+
+runNode :: MonadIO m => [InitializedNode] -> InitializedNode -> m ()
+runNode ps n = liftIO $ do
+  let r = _initializedNode_running n
+  readIORef r >>= \case
+    Just _ -> putStrLn "Node is already running"
+    Nothing -> do
+      a <- liftIO $ async $ runNodeSync ps n
+      writeIORef r (Just a)
 
 runNodeSync :: MonadIO m => [InitializedNode] -> InitializedNode -> m ()
 runNodeSync persistentPeers n = void $ do
@@ -116,8 +132,6 @@ runNodeSync persistentPeers n = void $ do
       log "Launching" Nothing
       shelly $ tendermintNode (mkGlobalFlags root i) (mkNodeFlags root persistentPeers i)
 
-stopNode :: MonadIO m => LaunchedNode -> m ()
-stopNode = liftIO . cancel . _launchedNode_core
 
 initNetwork :: MonadIO m => Text -> Int -> m [InitializedNode]
 initNetwork root size = shelly $ do
@@ -153,7 +167,7 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
 
     sleep 1
     n3 <- initNodeInNetwork n0 3
-    a3 <- runNode peers n3
+    runNode peers n3
 
     sleep 4
     broadcastPactFile n1 "pact/coin-contract/coin.repl"
@@ -189,7 +203,7 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
       |]
 
     sleep 2
-    stopNode a3
+    stopNode n3
     flip runReaderT (coreEnv $ Just 3) $ log "Shutting down" Nothing
 
     sleep 3
@@ -303,12 +317,8 @@ data InitializedNode = InitializedNode
   , _initializedNode_networkRoot :: Text
   , _initializedNode_home        :: Text
   , _initializedNode_peer        :: Peer
-  } deriving (Eq, Ord, Read, Show, Generic)
-
-data LaunchedNode = LaunchedNode
-  { _launchedNode_dir :: InitializedNode
-  , _launchedNode_core :: Async ()
-  } deriving (Eq, Ord, Generic)
+  , _initializedNode_running     :: IORef (Maybe (Async ()))
+  } deriving (Eq, Generic)
 
 type Address = Text
 type Peer = (Text, Address)
@@ -343,11 +353,13 @@ mkNetworkFlags networkRoot size = NetworkFlags
 mkInitializedNode :: Text -> Int -> Sh InitializedNode
 mkInitializedNode root i = do
   nid <- silently $ fmap T.strip $ tendermint (mkGlobalFlags root i) "show_node_id" []
+  r <- liftIO $ newIORef Nothing
   pure $ InitializedNode
     { _initializedNode_index = i
     , _initializedNode_networkRoot = root
     , _initializedNode_home = mkNodeHome i
     , _initializedNode_peer = (nid, mkP2PAddress i)
+    , _initializedNode_running = r
     }
 
 mkNodeHome :: Int -> Text
