@@ -1,1 +1,1 @@
-nix-shell -A shells.ghc --run "cabal new-repl all"
+nix-shell -A shells.ghc --run "cabal new-repl --repl-options='-ignore-dot-ghci' --repl-options='-ghci-script repl.ghci'"
