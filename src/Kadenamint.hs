@@ -22,7 +22,7 @@ import Control.Monad                                    ((>=>))
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), asks, runReaderT)
-import Control.Monad.State.Strict                       (MonadState(..), StateT(..), evalStateT, get, modify)
+import Control.Monad.State.Strict                       (StateT(..), evalStateT)
 import Control.Monad.Trans.Class                        (lift)
 import Data.Binary.Builder                              (toLazyByteString)
 import Data.Bool                                        (bool)
@@ -31,7 +31,7 @@ import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (ServerSettings, serverSettings)
 import Data.Default                                     (Default(..))
 import Data.Functor                                     (void)
-import Data.IORef                                       (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef                                       (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.String                                      (IsString(..))
 import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
@@ -146,7 +146,7 @@ deleteNetwork n = shelly $ run_ "rm" ["-rf", _initializedNode_networkRoot n]
 
 withNetwork
   :: Int
-  -> (Text -> [InitializedNode] -> StateT Int (ReaderT Env IO) ())
+  -> (Text -> [InitializedNode] -> StateT Int IO ())
   -> IO ()
 withNetwork size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
   genesisNodes <- initNetwork root size
@@ -154,33 +154,38 @@ withNetwork size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
   flip runReaderT (coreEnv Nothing) $
     log ("Network of size " <> tshow size <> " has been setup at " <> root) Nothing
 
-  liftIO $ withAsync (runTimeline broadcastEnv $ f root genesisNodes) $ \_ ->
+  liftIO $ withAsync (runTimeline $ f root genesisNodes) $ \_ ->
     forConcurrently_ genesisNodes (runNodeSync genesisNodes)
 
-type Timeline m = (MonadState Int m, MonadReader Env m, MonadIO m)
+mkNonce :: MonadIO m => m (IORef Int)
+mkNonce = liftIO $ newIORef 0
+
+type Timeline m = (MonadReader Env m, MonadIO m)
 
 timelineCoinContract :: IO ()
 timelineCoinContract = withNetwork 3 $ \_ -> \case
   peers@[n0, n1, n2] -> do
+    nonce <- mkNonce
+
     sleep 3
-    broadcastPactFile n0 "pact/coin-contract/coin.pact"
+    broadcastPactFile n0 nonce "pact/coin-contract/coin.pact"
 
     sleep 1
     n3 <- initNodeInNetwork n0 3
     runNode peers n3
 
     sleep 4
-    broadcastPactFile n1 "pact/coin-contract/coin.repl"
+    broadcastPactFile n1 nonce "pact/coin-contract/coin.repl"
 
     sleep 3
-    broadcastPactText n2
+    broadcastPactText n2 nonce
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
       |]
 
     sleep 3
-    broadcastPactText n3
+    broadcastPactText n3 nonce
       [here|
            (use coin)
 
@@ -196,7 +201,7 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
       |]
 
     sleep 3
-    broadcastPactText n0
+    broadcastPactText n0 nonce
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
@@ -207,7 +212,7 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
     flip runReaderT (coreEnv $ Just 3) $ log "Shutting down" Nothing
 
     sleep 3
-    broadcastPactText n0
+    broadcastPactText n0 nonce
       [here|
            (use coin)
 
@@ -223,7 +228,7 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
       |]
 
     sleep 3
-    broadcastPactText n0
+    broadcastPactText n0 nonce
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
@@ -237,27 +242,33 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
 timelineHelloWorld :: IO ()
 timelineHelloWorld = withNetwork 3 $ \_ -> \case
   peers@[n0, n1, _n2] -> do
-    sleep 3 *> broadcastPactFile n0 "pact/hello-world.pact"
-    sleep 2 *> broadcastPactText n1 "(hello-world.set-message \"hello\")"
+    nonce <- mkNonce
+
+    sleep 3 *> broadcastPactFile n0 nonce "pact/hello-world.pact"
+    sleep 2 *> broadcastPactText n1 nonce "(hello-world.set-message \"hello\")"
 
     sleep 1
     n3 <- initNodeInNetwork n0 3
     void $ runNode peers n3
 
-    sleep 3 *> broadcastPactText n3 "(hello-world.greet)"
+    sleep 3 *> broadcastPactText n3 nonce "(hello-world.greet)"
   _ -> impossible
 
 timelineRepl :: IO ()
 timelineRepl = withNetwork 2 $ \_ -> \case
   [n0, n1] -> do
-    sleep 3 *> broadcastPactText n0 "(+ 1 2)"
-    sleep 2 *> broadcastPactText n1 "(+ 2 3)"
+    nonce <- mkNonce
+
+    sleep 3 *> broadcastPactText n0 nonce "(+ 1 2)"
+    sleep 2 *> broadcastPactText n1 nonce "(+ 1 2)"
   _ -> impossible
 
-runTimeline :: Env -> StateT Int (ReaderT Env IO) a -> IO a
-runTimeline env = flip runReaderT env . flip evalStateT 0
+runTimeline :: StateT Int IO a -> IO a
+runTimeline = flip evalStateT 0
 
 {- Tendermint RPC -}
+type Nonce = Int
+
 data PactTransaction = PactTransaction
   { _pactTransaction_nonce :: Int
   , _pactTransaction_code  :: PactCode
@@ -268,23 +279,26 @@ data PactCode
   | PactCode_File Text
   deriving (Eq, Ord, Read, Show, Generic)
 
-broadcastPactText :: Timeline m => InitializedNode -> Text -> m ()
-broadcastPactText n = broadcastPact n . PactCode_Text
+broadcastPactText :: MonadIO m => InitializedNode -> IORef Nonce -> Text -> m ()
+broadcastPactText n nonce = broadcastPact n nonce . PactCode_Text
 
-broadcastPactFile :: Timeline m => InitializedNode -> Text -> m ()
-broadcastPactFile n path = do
+broadcastPactFile :: MonadIO m => InitializedNode -> IORef Nonce -> Text -> m ()
+broadcastPactFile n nonce path = do
   p <- shelly $ Sh.absPath $ Sh.fromText $ _ASSUME_ "local network" path
-  broadcastPact n $ PactCode_File $ Sh.toTextIgnore p
+  broadcastPact n nonce $ PactCode_File $ Sh.toTextIgnore p
 
-broadcastPact :: Timeline m => InitializedNode -> PactCode -> m ()
-broadcastPact n code = do
+broadcastPact :: MonadIO m => InitializedNode -> IORef Nonce -> PactCode -> m ()
+broadcastPact n nonceRef code = do
   let
     i = _initializedNode_index n
     rpc = mkRPCAddress i
-  log ("Broadcasting pact code to node #" <> tshow i <> " at " <> rpc) (Just $ tshow code)
-  nonce <- get
-  modify (+1)
-  broadcastTransaction rpc $ tshow $ PactTransaction nonce code
+
+  nonce <- liftIO $ readIORef nonceRef
+  liftIO $ modifyIORef' nonceRef (+1)
+
+  flip runReaderT broadcastEnv $ do
+    log ("Broadcasting pact code to node #" <> tshow i <> " at " <> rpc) (Just $ tshow code)
+    broadcastTransaction rpc $ tshow $ PactTransaction nonce code
 
 broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> Text -> m ()
 broadcastTransaction addr t = do
