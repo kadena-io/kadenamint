@@ -9,6 +9,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -419,22 +420,37 @@ genesisFile n = configDir n </> ("genesis.json" :: Text)
 configDir :: InitializedNode -> Sh.FilePath
 configDir n = getNodePath n </> ("config" :: Text)
 
+tendermint :: GlobalFlags -> Text -> [Text] -> Sh Text
+tendermint gf tmCmd cmdArgs = runCmd $ tendermintCmd gf tmCmd cmdArgs
+
+tendermintNetwork :: NetworkFlags -> Sh Text
+tendermintNetwork = runCmd . tendermintNetworkCmd
+
+tendermintNode :: GlobalFlags -> NodeFlags -> Sh Text
+tendermintNode gf nf = runCmd $ tendermintNodeCmd gf nf
+
+runCmd :: (Sh.FilePath, [Text]) -> Sh Text
+runCmd = uncurry run
+
+plainCmd :: (Sh.FilePath, [Text]) -> Text
+plainCmd (cmd, args) = T.intercalate " " $ Sh.toTextIgnore cmd : fmap singleQuotes args
+
 tendermintPath :: Sh.FilePath
 tendermintPath = Sh.fromText $ T.pack $(staticWhich "tendermint")
 
-tendermint :: GlobalFlags -> Text -> [Text] -> Sh Text
-tendermint gf tmCmd cmdArgs = run tendermintPath $ tmArgs <> [tmCmd] <> cmdArgs
+tendermintCmd :: GlobalFlags -> Text -> [Text] -> (Sh.FilePath, [Text])
+tendermintCmd gf tmCmd cmdArgs = (tendermintPath,) $ tmArgs <> [tmCmd] <> cmdArgs
   where
     tmArgs = ["--home", _globalFlags_home gf]
 
-tendermintNetwork :: NetworkFlags -> Sh Text
-tendermintNetwork nf = run tendermintPath $ ("testnet" :) $
+tendermintNetworkCmd :: NetworkFlags -> (Sh.FilePath, [Text])
+tendermintNetworkCmd nf = (tendermintPath,) $ ("testnet" :) $
   [ "--v", tshow $ _networkFlags_validators nf
   , "--o", _networkFlags_output nf
   ] <> bool [] ["--populate-persistent-peers"] (_networkFlags_populatePeers nf)
 
-tendermintNode :: GlobalFlags -> NodeFlags -> Sh Text
-tendermintNode gf nf = tendermint gf "node"
+tendermintNodeCmd :: GlobalFlags -> NodeFlags -> (Sh.FilePath, [Text])
+tendermintNodeCmd gf nf = tendermintCmd gf "node"
   [ "--p2p.laddr", _nodeFlags_p2p nf
   , "--rpc.laddr", _nodeFlags_rpc nf & _UPSTREAM_ "incoherent with other address flags" ("tcp://" <>)
   , "--proxy_app", mkAddress $ _nodeFlags_app nf
@@ -596,6 +612,9 @@ fatal = error "fatal error"
 
 impossible :: a
 impossible = error "the 'impossible' has happened"
+
+singleQuotes :: (IsString a, Semigroup a) => a -> a
+singleQuotes t = "'" <> t <> "'"
 
 doubleQuotes :: (IsString a, Semigroup a) => a -> a
 doubleQuotes t = "\"" <> t <> "\""
