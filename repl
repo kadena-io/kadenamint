@@ -1,1 +1,2 @@
-nix-shell -A shells.ghc --run "cabal new-repl --repl-options='-ignore-dot-ghci' --repl-options='-ghci-script repl.ghci'"
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+cd $DIR && nix-shell -A shells.ghc --run "cabal new-repl --repl-options='-ignore-dot-ghci' --repl-options='-ghci-script repl.ghci'"

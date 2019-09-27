@@ -1,1 +1,2 @@
-nix-shell -A shells.ghc --run "ghcid -c 'cabal new-repl all'"
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+cd $DIR && nix-shell -A shells.ghc --run "ghcid -c 'cabal new-repl all'"

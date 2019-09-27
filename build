@@ -1,1 +1,2 @@
-nix-build -A ghc.kadenamint
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+cd $DIR && nix-build -A ghc.kadenamint
