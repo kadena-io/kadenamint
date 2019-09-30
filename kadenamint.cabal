@@ -25,10 +25,13 @@ library
                , pact
                , shelly
                , text
+               , tomland
                , transformers
                , which
   exposed-modules:
     Kadenamint
+    Kadenamint.Tendermint
+    Kadenamint.Tendermint.Config
   ghc-options: -Wall
 
 executable kadenamint

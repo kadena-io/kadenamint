@@ -16,9 +16,9 @@
 module Kadenamint where
 
 import Control.Concurrent                               (threadDelay)
-import Control.Concurrent.Async                         (Async, async, cancel, forConcurrently_, withAsync)
+import Control.Concurrent.Async                         (async, cancel, forConcurrently_, withAsync)
 import Control.Concurrent.MVar                          (modifyMVar_, readMVar)
-import Control.Lens                                     (strict, view, _2, (&), (^.), (.~), (+~))
+import Control.Lens                                     (imap, strict, view, (&), (^.), (.~))
 import Control.Monad                                    ((>=>))
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
@@ -29,16 +29,19 @@ import Data.Binary.Builder                              (toLazyByteString)
 import Data.Bool                                        (bool)
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
 import Data.Colour.SRGB                                 (Colour, sRGB24)
-import Data.Conduit.Network                             (ServerSettings, serverSettings)
+import Data.Conduit.Network                             (serverSettings)
 import Data.Default                                     (Default(..))
 import Data.Functor                                     (void)
-import Data.IORef                                       (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef                                       (IORef, modifyIORef', newIORef, readIORef)
+import Data.Maybe                                       (fromMaybe)
 import Data.String                                      (IsString(..))
 import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
+import qualified Data.Text.IO as T
+import Data.Traversable                                 (for)
 import GHC.Generics                                     (Generic)
 import Network.HTTP.Types                               (encodePath)
 import Shelly                                           (Sh, cp, shelly, silently, run, run_, toTextIgnore, withTmpDir, (</>))
@@ -46,6 +49,7 @@ import qualified Shelly as Sh
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..), setSGRCode)
 import System.Which                                     (staticWhich)
 import Text.Read as T                                   (readMaybe)
+import qualified Toml
 
 import Prelude                                          hiding (head, log)
 
@@ -60,6 +64,8 @@ import qualified Pact.Repl as Pact
 import qualified Pact.Repl.Types as Pact
 import qualified Pact.Types.Pretty as Pact
 import qualified Pact.Types.Runtime as Pact
+
+import Kadenamint.Tendermint
 
 {- Process orchestration -}
 newtype Env = Env
@@ -76,74 +82,110 @@ broadcastEnv = Env
   { _env_printer = sgrify [SetRGBColor Foreground cyan] . ("\n[RPC] " <>)
   }
 
-coreEnv :: Maybe Int -> Env
-coreEnv nid' = Env
+coreEnv :: Maybe Text -> Env
+coreEnv moniker = Env
   { _env_printer = \x ->
       sgrify [SetRGBColor Foreground red] $ mconcat
       [ "\n[CORE] "
-      , maybe "" (\nid -> "Node: " <> tshow nid <> " | ") nid'
+      , maybe "" (\m -> "Node: " <> tshow m <> " | ") moniker
       , x
       ]
   }
 
-abciEnv :: Int -> Env
-abciEnv nid = Env
+abciEnv :: Text -> Env
+abciEnv moniker = Env
   { _env_printer = \x ->
-      sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> tshow nid <> " | " <> x
+      sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> moniker <> " | " <> x
   }
 
-initNode :: MonadIO m => Text -> Int -> m InitializedNode
-initNode root i = shelly $ do
-  void $ tendermint (mkGlobalFlags root i) "init" []
-  mkInitializedNode root i
+data NodePorts = NodePorts
+  { _nodePorts_p2p :: Int
+  , _nodePorts_rpc :: Int
+  , _nodePorts_abci :: Int
+  } deriving (Eq, Ord, Read, Show, Generic)
 
-initNodeInNetwork :: MonadIO m => InitializedNode -> Int -> m InitializedNode
-initNodeInNetwork preExistingNode i = shelly $ do
-  n <- initNode (_initializedNode_networkRoot preExistingNode) i
+nodePortsOffset :: Int
+nodePortsOffset = 10
+
+nthNodePorts :: Int -> NodePorts
+nthNodePorts index =
+  let offset = 26656 + nodePortsOffset * index
+  in NodePorts offset (offset + 1) (offset + 2)
+
+extraNodePorts :: NodePorts
+extraNodePorts = nthNodePorts 4
+
+addNode :: MonadIO m => Text -> Text -> NodePorts -> InitializedNode -> m InitializedNode
+addNode home moniker ports preExistingNode = shelly $ do
+  void $ tendermint (GlobalFlags home) "init" []
+  n <- loadInitializedNode home
+
   cp (genesisFile preExistingNode) (configDir n)
-    & _ASSUME_ "other files unwanted"
-  pure n
+  let
+    newCfg = _initializedNode_config preExistingNode
+      & config_moniker .~ moniker
+      & updatePorts ports
+  storeConfig home newCfg
 
-stopNode :: MonadIO m => InitializedNode -> m ()
-stopNode n = liftIO $ do
-  let r = _initializedNode_running n
-  readIORef r >>= \case
-    Nothing -> putStrLn "Node is already stopped"
-    Just a -> do
-      cancel a
-      writeIORef r Nothing
+  pure $ n &
+    initializedNode_config .~ newCfg
 
-runNode :: MonadIO m => [InitializedNode] -> InitializedNode -> m ()
-runNode ps n = liftIO $ do
-  let r = _initializedNode_running n
-  readIORef r >>= \case
-    Just _ -> putStrLn "Node is already running"
-    Nothing -> do
-      a <- liftIO $ async $ runNodeSync ps n
-      writeIORef r (Just a)
+runNode :: MonadIO m => InitializedNode -> m ()
+runNode n = void $ do
+  let
+    cfg = _initializedNode_config n
+    moniker = _config_moniker cfg
 
-runNodeSync :: MonadIO m => [InitializedNode] -> InitializedNode -> m ()
-runNodeSync persistentPeers n = void $ do
-  let i    = _initializedNode_index n
-      root = _initializedNode_networkRoot n
-
-  liftIO $ withAsync (runABCI i) $ \_ ->
-    flip runReaderT (coreEnv $ Just i) $ do
-      liftIO $ threadDelay $ seconds i `div` 10
+  liftIO $ withAsync (runABCI cfg) $ \_ ->
+    flip runReaderT (coreEnv $ Just moniker) $ do
       log "Launching" Nothing
-      shelly $ tendermintNode (mkGlobalFlags root i) (mkNodeFlags root persistentPeers i)
-
+      shelly $ tendermintNode $ GlobalFlags $ _initializedNode_home n
 
 initNetwork :: MonadIO m => Text -> Int -> m [InitializedNode]
 initNetwork root size = shelly $ do
   void $ tendermintNetwork $ mkNetworkFlags root size
-  traverse (mkInitializedNode root) [0 .. size-1]
+  for [0..size-1] $ \i -> do
+    let
+      home = root <> "/node" <> tshow i
+    n <- loadInitializedNode home
+    let
+      oldCfg = n ^. initializedNode_config
+      ports = nthNodePorts i
+
+      peers = T.splitOn "," $ oldCfg ^. config_p2p . configP2P_persistentPeers
+      peers' = T.intercalate "," $ flip imap peers $ \j peer ->
+        let (nid, rest) = cleave "@" peer
+            (_host, port) = cleave ":" rest
+            port' = case T.readMaybe (T.unpack port) of
+              Nothing -> error "parsing error"
+              Just p -> p + j * nodePortsOffset
+        in nid <> "@" <> localhost <> ":" <> tshow port'
+
+    let cfg = oldCfg
+          & config_moniker .~ "node" <> tshow i
+          & updatePorts ports
+          & config_p2p . configP2P_persistentPeers .~ peers'
+          & config_p2p . configP2P_privatePeerIds .~ peers'
+          & config_p2p . configP2P_addrBookStrict .~ False
+          & config_p2p . configP2P_allowDuplicateIp .~ True
+          & config_consensus . configConsensus_createEmptyBlocksInterval .~ "5s"
+
+    storeConfig home cfg
+    pure $ n & initializedNode_config .~ cfg
+
+updatePorts :: NodePorts -> Config -> Config
+updatePorts (NodePorts p2p rpc abci) cfg = cfg
+  & config_p2p . configP2P_laddr .~ l p2p
+  & config_rpc . configRPC_laddr .~ l rpc
+  & config_proxyApp .~ l abci
+  where
+    l p = "tcp://" <> localhost <> ":" <> tshow p
+
+localhost :: Text
+localhost = "127.0.0.1"
 
 runEverything :: IO ()
 runEverything = timelineCoinContract
-
-deleteNetwork :: InitializedNode -> IO ()
-deleteNetwork n = shelly $ run_ "rm" ["-rf", _initializedNode_networkRoot n]
 
 withNetwork
   :: Int
@@ -156,7 +198,7 @@ withNetwork size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
     log ("Network of size " <> tshow size <> " has been setup at " <> root) Nothing
 
   liftIO $ withAsync (runTimeline $ f root genesisNodes) $ \_ ->
-    forConcurrently_ genesisNodes (runNodeSync genesisNodes)
+    forConcurrently_ genesisNodes runNode
 
 mkNonce :: MonadIO m => m (IORef Int)
 mkNonce = liftIO $ newIORef 0
@@ -164,29 +206,30 @@ mkNonce = liftIO $ newIORef 0
 type Timeline m = (MonadReader Env m, MonadIO m)
 
 timelineCoinContract :: IO ()
-timelineCoinContract = withNetwork 3 $ \_ -> \case
-  peers@[n0, n1, n2] -> do
+timelineCoinContract = withNetwork 2 $ \root -> \case
+  [n0, n1] -> do
     nonce <- mkNonce
 
     sleep 3
-    broadcastPactFile n0 nonce "pact/coin-contract/coin.pact"
+    broadcastPactFile nonce "pact/coin-contract/coin.pact" n0
 
     sleep 1
-    n3 <- initNodeInNetwork n0 3
-    runNode peers n3
+    n3 <- addNode (root <> "/node3") "node3" extraNodePorts n0
+    a3 <- liftIO $ async $ runNode n3
 
     sleep 4
-    broadcastPactFile n1 nonce "pact/coin-contract/coin.repl"
+    broadcastPactFile nonce "pact/coin-contract/coin.repl" n1
 
     sleep 3
-    broadcastPactText n2 nonce
+    broadcastPactText nonce
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
       |]
+      n1
 
     sleep 3
-    broadcastPactText n3 nonce
+    broadcastPactText nonce
       [here|
            (use coin)
 
@@ -200,20 +243,22 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
            (debit 'k3 0.5)
            (credit 'k1 (read-keyset 'k1) 0.5)
       |]
+      n3
 
     sleep 3
-    broadcastPactText n0 nonce
+    broadcastPactText nonce
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
       |]
+      n0
 
     sleep 2
-    stopNode n3
-    flip runReaderT (coreEnv $ Just 3) $ log "Shutting down" Nothing
+    liftIO $ cancel a3
+    void $ liftIO $ async $ runNode n3
 
     sleep 3
-    broadcastPactText n0 nonce
+    broadcastPactText nonce
       [here|
            (use coin)
 
@@ -227,32 +272,31 @@ timelineCoinContract = withNetwork 3 $ \_ -> \case
            (debit 'k3 0.5)
            (credit 'k2 (read-keyset 'k2) 0.5)
       |]
+      n0
 
     sleep 3
-    broadcastPactText n0 nonce
+    broadcastPactText nonce
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
       |]
-
-    sleep 3
-    void $ runNode peers n3
+      n0
 
   _ -> impossible
 
 timelineHelloWorld :: IO ()
-timelineHelloWorld = withNetwork 3 $ \_ -> \case
-  peers@[n0, n1, _n2] -> do
+timelineHelloWorld = withNetwork 3 $ \root -> \case
+  [n0, n1, _n2] -> do
     nonce <- mkNonce
 
-    sleep 3 *> broadcastPactFile n0 nonce "pact/hello-world.pact"
-    sleep 2 *> broadcastPactText n1 nonce "(hello-world.set-message \"hello\")"
+    sleep 3 *> broadcastPactFile nonce "pact/hello-world.pact" n0
+    sleep 2 *> broadcastPactText nonce "(hello-world.set-message \"hello\")" n1
 
     sleep 1
-    n3 <- initNodeInNetwork n0 3
-    void $ runNode peers n3
+    n3 <- addNode (root <> "/node3") "node3" extraNodePorts n0
+    void $ liftIO $ async $ runNode n3
 
-    sleep 3 *> broadcastPactText n3 nonce "(hello-world.greet)"
+    sleep 3 *> broadcastPactText nonce "(hello-world.greet)" n3
   _ -> impossible
 
 timelineRepl :: IO ()
@@ -260,8 +304,8 @@ timelineRepl = withNetwork 2 $ \_ -> \case
   [n0, n1] -> do
     nonce <- mkNonce
 
-    sleep 3 *> broadcastPactText n0 nonce "(+ 1 2)"
-    sleep 2 *> broadcastPactText n1 nonce "(+ 1 2)"
+    sleep 3 *> broadcastPactText nonce "(+ 1 2)" n0
+    sleep 2 *> broadcastPactText nonce "(+ 1 2)" n1
   _ -> impossible
 
 runTimeline :: StateT Int IO a -> IO a
@@ -280,25 +324,26 @@ data PactCode
   | PactCode_File Text
   deriving (Eq, Ord, Read, Show, Generic)
 
-broadcastPactText :: MonadIO m => InitializedNode -> IORef Nonce -> Text -> m ()
-broadcastPactText n nonce = broadcastPact n nonce . PactCode_Text
+broadcastPactText :: MonadIO m => IORef Nonce -> Text -> InitializedNode -> m ()
+broadcastPactText nonce txt n = broadcastPact nonce (PactCode_Text txt) n
 
-broadcastPactFile :: MonadIO m => InitializedNode -> IORef Nonce -> Text -> m ()
-broadcastPactFile n nonce path = do
+broadcastPactFile :: MonadIO m => IORef Nonce -> Text -> InitializedNode -> m ()
+broadcastPactFile nonce path n = do
   p <- shelly $ Sh.absPath $ Sh.fromText $ _ASSUME_ "local network" path
-  broadcastPact n nonce $ PactCode_File $ Sh.toTextIgnore p
+  broadcastPact nonce (PactCode_File $ Sh.toTextIgnore p) n
 
-broadcastPact :: MonadIO m => InitializedNode -> IORef Nonce -> PactCode -> m ()
-broadcastPact n nonceRef code = do
+broadcastPact :: MonadIO m => IORef Nonce -> PactCode -> InitializedNode -> m ()
+broadcastPact nonceRef code n = do
   let
-    i = _initializedNode_index n
-    rpc = mkRPCAddress i
+    cfg = _initializedNode_config n
+    rpc' = _configRPC_laddr $ _config_rpc cfg
+    rpc = fromMaybe rpc $ T.stripPrefix "tcp://" rpc'
 
   nonce <- liftIO $ readIORef nonceRef
   liftIO $ modifyIORef' nonceRef (+1)
 
   flip runReaderT broadcastEnv $ do
-    log ("Broadcasting pact code to node #" <> tshow i <> " at " <> rpc) (Just $ tshow code)
+    log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> rpc) (Just $ tshow code)
     broadcastTransaction rpc $ tshow $ PactTransaction nonce code
 
 broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> Text -> m ()
@@ -327,98 +372,30 @@ toEndpoint = \case
     f = ("broadcast_tx_" <>)
 
 {- Tendermint CLI -}
-data InitializedNode = InitializedNode
-  { _initializedNode_index       :: Int
-  , _initializedNode_networkRoot :: Text
-  , _initializedNode_home        :: Text
-  , _initializedNode_peer        :: Peer
-  , _initializedNode_running     :: IORef (Maybe (Async ()))
-  } deriving (Eq, Generic)
+loadInitializedNode :: MonadIO m => Text -> m InitializedNode
+loadInitializedNode home = pure (InitializedNode home)
+  <*> loadConfig home
+  <*> shelly (silently $ fmap T.strip $ tendermint (GlobalFlags home) "show_node_id" [])
 
-type Address = Text
-type Peer = (Text, Address)
+loadConfig :: MonadIO m => Text -> m Config
+loadConfig home = liftIO $ do
+  toml <- T.readFile $ T.unpack $ home <> "/config" <> "/config.toml"
+  case Toml.decode configCodec toml of
+    Left err -> do
+      print toml
+      print $ err
+      error "Failed decoding"
+    Right config -> pure config
 
-newtype GlobalFlags = GlobalFlags
-  { _globalFlags_home :: Text
-  } deriving (Eq, Ord, Read, Show, Generic)
 
-data NetworkFlags = NetworkFlags
-  { _networkFlags_validators    :: Int
-  , _networkFlags_output        :: Text
-  , _networkFlags_populatePeers :: Bool
-  } deriving (Eq, Ord, Read, Show, Generic)
-
-data NodeFlags = NodeFlags
-  { _nodeFlags_global :: GlobalFlags
-  , _nodeFlags_app :: HostPort
-  , _nodeFlags_p2p :: Address
-  , _nodeFlags_rpc :: Address
-  , _nodeFlags_peers :: [Peer]
-  , _nodeFlags_privatePeers :: [Peer]
-  , _nodeFlags_emptyBlocks :: Bool
-  } deriving (Eq, Ord, Read, Show, Generic)
-
-mkNetworkFlags :: Text -> Int -> NetworkFlags
-mkNetworkFlags networkRoot size = NetworkFlags
-  { _networkFlags_validators    = size
-  , _networkFlags_output        = networkRoot
-  , _networkFlags_populatePeers = True
-  }
-
-mkInitializedNode :: Text -> Int -> Sh InitializedNode
-mkInitializedNode root i = do
-  nid <- silently $ fmap T.strip $ tendermint (mkGlobalFlags root i) "show_node_id" []
-  r <- liftIO $ newIORef Nothing
-  pure $ InitializedNode
-    { _initializedNode_index = i
-    , _initializedNode_networkRoot = root
-    , _initializedNode_home = mkNodeHome i
-    , _initializedNode_peer = (nid, mkP2PAddress i)
-    , _initializedNode_running = r
-    }
-
-mkNodeHome :: Int -> Text
-mkNodeHome i = "node" <> tshow i
-
-getNodePath :: InitializedNode -> Text
-getNodePath n = _initializedNode_networkRoot n <> "/" <> _initializedNode_home n
-
-mkNodePath :: Text -> Int -> Text
-mkNodePath root i = root <> "/" <> mkNodeHome i
-
-mkGlobalFlags :: Text -> Int -> GlobalFlags
-mkGlobalFlags root i = GlobalFlags { _globalFlags_home = mkNodePath root i }
-
-mkPortOffset :: Int -> Int
-mkPortOffset = (10 *)
-
-mkRPCAddress :: Int -> Address
-mkRPCAddress i = mkAddress $ defaultTendermintRPCHostPort & _2 +~ mkPortOffset i
-
-mkP2PAddress :: Int -> Address
-mkP2PAddress i = mkAddress $ defaultTendermintP2PHostPort & _2 +~ mkPortOffset i
-
-mkABCIHostPort :: Int -> HostPort
-mkABCIHostPort i = defaultABCIAppHostPort & _2 +~ mkPortOffset i
-
-mkNodeFlags :: Text -> [InitializedNode] -> Int -> NodeFlags
-mkNodeFlags root peers i = NodeFlags
-  { _nodeFlags_global = mkGlobalFlags root i
-  , _nodeFlags_app = mkABCIHostPort i
-  , _nodeFlags_p2p = mkP2PAddress i
-  , _nodeFlags_rpc = mkRPCAddress i
-  , _nodeFlags_peers = ps
-  , _nodeFlags_privatePeers = ps
-  , _nodeFlags_emptyBlocks = False
-  }
-  where
-    ps = _initializedNode_peer <$> peers
+storeConfig :: MonadIO m => Text -> Config -> m ()
+storeConfig home = liftIO . T.writeFile (T.unpack $ home <> "/config" <> "/config.toml") . Toml.encode configCodec
 
 genesisFile :: InitializedNode -> Sh.FilePath
 genesisFile n = configDir n </> ("genesis.json" :: Text)
 
 configDir :: InitializedNode -> Sh.FilePath
-configDir n = getNodePath n </> ("config" :: Text)
+configDir n = _initializedNode_home n </> ("config" :: Text)
 
 tendermint :: GlobalFlags -> Text -> [Text] -> Sh Text
 tendermint gf tmCmd cmdArgs = runCmd $ tendermintCmd gf tmCmd cmdArgs
@@ -426,8 +403,8 @@ tendermint gf tmCmd cmdArgs = runCmd $ tendermintCmd gf tmCmd cmdArgs
 tendermintNetwork :: NetworkFlags -> Sh Text
 tendermintNetwork = runCmd . tendermintNetworkCmd
 
-tendermintNode :: GlobalFlags -> NodeFlags -> Sh Text
-tendermintNode gf nf = runCmd $ tendermintNodeCmd gf nf
+tendermintNode :: GlobalFlags -> Sh Text
+tendermintNode = runCmd . tendermintNodeCmd
 
 runCmd :: (Sh.FilePath, [Text]) -> Sh Text
 runCmd = uncurry run
@@ -447,45 +424,27 @@ tendermintNetworkCmd :: NetworkFlags -> (Sh.FilePath, [Text])
 tendermintNetworkCmd nf = (tendermintPath,) $ ("testnet" :) $
   [ "--v", tshow $ _networkFlags_validators nf
   , "--o", _networkFlags_output nf
+  , "--starting-ip-address", localhost
   ] <> bool [] ["--populate-persistent-peers"] (_networkFlags_populatePeers nf)
 
-tendermintNodeCmd :: GlobalFlags -> NodeFlags -> (Sh.FilePath, [Text])
-tendermintNodeCmd gf nf = tendermintCmd gf "node"
-  [ "--p2p.laddr", _nodeFlags_p2p nf
-  , "--rpc.laddr", _nodeFlags_rpc nf & _UPSTREAM_ "incoherent with other address flags" ("tcp://" <>)
-  , "--proxy_app", mkAddress $ _nodeFlags_app nf
-  , "--p2p.persistent_peers", T.intercalate "," $ flip fmap (_nodeFlags_peers nf) $ \(pid, addr) -> mconcat
-      [ pid
-      , "@"
-      , addr
-      ]
-  , "--p2p.private_peer_ids", T.intercalate "," $ fmap fst (_nodeFlags_privatePeers nf)
-    & _TODO_ (mconcat
-               [ "figure out if there's a better way to hush logs:"
-               , "see https://github.com/tendermint/tendermint/issues/1215"
-               , "& https://github.com/tendermint/tendermint/pull/3474"
-               ])
-  , "--consensus.create_empty_blocks" <> _UPSTREAM_ "incoherent with other args" "=" <> tshow (_nodeFlags_emptyBlocks nf)
-  ]
-
-{- Network addresses -}
-defaultTendermintP2PHostPort :: (Text, Int)
-defaultTendermintP2PHostPort = ("127.0.0.1", 26656)
-
-defaultTendermintRPCHostPort :: (Text, Int)
-defaultTendermintRPCHostPort = ("127.0.0.1", 26657)
-
-defaultABCIAppHostPort :: IsString a => (a, Int)
-defaultABCIAppHostPort = ("127.0.0.1", 26658)
+tendermintNodeCmd :: GlobalFlags -> (Sh.FilePath, [Text])
+tendermintNodeCmd gf = tendermintCmd gf "node" []
 
 {- ABCI app -}
-runABCI :: Int -> IO ()
-runABCI nid = do
+runABCI :: Config -> IO ()
+runABCI cfg = do
   rs <- Pact.initReplState Pact.StringEval Nothing
   _logger <- mkLogStdout -- too noisy
 
   let
-    env = abciEnv nid
+    env = abciEnv $ _config_moniker cfg
+
+    (_protocol, rest) = cleave "://" (cfg ^. config_proxyApp)
+    (host, port) = cleave ":" rest
+    port' = case T.readMaybe (T.unpack port) of
+      Nothing -> error "parsing error"
+      Just p -> p
+    host' = fromString $ T.unpack host
 
     transformHandler :: HandlerT (Response t) -> IO (Response t)
     transformHandler er = do
@@ -495,7 +454,7 @@ runABCI nid = do
         Left l -> pure $ ResponseException $ def
           & _exceptionError .~ l
 
-  serveAppWith (mkServerSettings $ mkABCIHostPort nid) mempty
+  serveAppWith (serverSettings port' host') mempty
     $ transformApp transformHandler
     $ app rs
 
@@ -581,14 +540,6 @@ runPactTransaction logParsed logEvaluated accept reject rs hx = rejectOnError $ 
       Right () -> accept
 
 {- Utils -}
-type HostPort = (Text, Int)
-
-mkAddress :: HostPort -> Text
-mkAddress (host, port) = host <> ":" <> tshow port
-
-mkServerSettings :: HostPort -> ServerSettings
-mkServerSettings (host, port) = serverSettings port $ fromString $ T.unpack host
-
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
@@ -612,6 +563,11 @@ fatal = error "fatal error"
 
 impossible :: a
 impossible = error "the 'impossible' has happened"
+
+cleave :: Text -> Text -> (Text, Text)
+cleave sep str =
+  let (a,b) = T.breakOn sep str
+  in (a, T.drop (T.length sep) b)
 
 singleQuotes :: (IsString a, Semigroup a) => a -> a
 singleQuotes t = "'" <> t <> "'"

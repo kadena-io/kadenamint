@@ -43,6 +43,12 @@ in rp.project ({ pkgs, hackGet, ... }:
         kadenamint = overrideCabal super.kadenamint (drv: {
           executableSystemDepends = (drv.executableSystemDepends or []) ++ [ tendermint ];
         });
+
+        tomland = dontCheck (self.callHackageDirect {
+          pkg = "tomland";
+          ver = "1.0.1.0";
+          sha256 = "0m9x09f694rlkmvmrba79dcffzdy8abs6fs56j8a6525lx46vccl";
+        } {});
       })
     ];
   }
