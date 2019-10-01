@@ -25,6 +25,7 @@ library
                , pact
                , shelly
                , text
+               , time
                , tomland
                , transformers
                , which

@@ -32,7 +32,6 @@ import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (serverSettings)
 import Data.Default                                     (Default(..))
 import Data.Functor                                     (void)
-import Data.IORef                                       (IORef, modifyIORef', newIORef, readIORef)
 import Data.Maybe                                       (fromMaybe)
 import Data.String                                      (IsString(..))
 import Data.String.Here.Uninterpolated                  (here)
@@ -41,6 +40,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
 import qualified Data.Text.IO as T
+import Data.Time                                        (UTCTime, getCurrentTime)
 import Data.Traversable                                 (for)
 import GHC.Generics                                     (Generic)
 import Network.HTTP.Types                               (encodePath)
@@ -200,28 +200,23 @@ withNetwork size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
   liftIO $ withAsync (runTimeline $ f root genesisNodes) $ \_ ->
     forConcurrently_ genesisNodes runNode
 
-mkNonce :: MonadIO m => m (IORef Int)
-mkNonce = liftIO $ newIORef 0
-
 type Timeline m = (MonadReader Env m, MonadIO m)
 
 timelineCoinContract :: IO ()
 timelineCoinContract = withNetwork 2 $ \root -> \case
   [n0, n1] -> do
-    nonce <- mkNonce
-
     sleep 3
-    broadcastPactFile nonce "pact/coin-contract/coin.pact" n0
+    broadcastPactFile "pact/coin-contract/coin.pact" n0
 
     sleep 1
     n3 <- addNode (root <> "/node3") "node3" extraNodePorts n0
     a3 <- liftIO $ async $ runNode n3
 
     sleep 4
-    broadcastPactFile nonce "pact/coin-contract/coin.repl" n1
+    broadcastPactFile "pact/coin-contract/coin.repl" n1
 
     sleep 3
-    broadcastPactText nonce
+    broadcastPactText
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
@@ -229,7 +224,7 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
       n1
 
     sleep 3
-    broadcastPactText nonce
+    broadcastPactText
       [here|
            (use coin)
 
@@ -246,7 +241,7 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
       n3
 
     sleep 3
-    broadcastPactText nonce
+    broadcastPactText
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
@@ -258,7 +253,7 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
     void $ liftIO $ async $ runNode n3
 
     sleep 3
-    broadcastPactText nonce
+    broadcastPactText
       [here|
            (use coin)
 
@@ -275,7 +270,7 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
       n0
 
     sleep 3
-    broadcastPactText nonce
+    broadcastPactText
       [here|
            (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
@@ -287,25 +282,21 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
 timelineHelloWorld :: IO ()
 timelineHelloWorld = withNetwork 3 $ \root -> \case
   [n0, n1, _n2] -> do
-    nonce <- mkNonce
-
-    sleep 3 *> broadcastPactFile nonce "pact/hello-world.pact" n0
-    sleep 2 *> broadcastPactText nonce "(hello-world.set-message \"hello\")" n1
+    sleep 3 *> broadcastPactFile "pact/hello-world.pact" n0
+    sleep 2 *> broadcastPactText "(hello-world.set-message \"hello\")" n1
 
     sleep 1
     n3 <- addNode (root <> "/node3") "node3" extraNodePorts n0
     void $ liftIO $ async $ runNode n3
 
-    sleep 3 *> broadcastPactText nonce "(hello-world.greet)" n3
+    sleep 3 *> broadcastPactText "(hello-world.greet)" n3
   _ -> impossible
 
 timelineRepl :: IO ()
 timelineRepl = withNetwork 2 $ \_ -> \case
   [n0, n1] -> do
-    nonce <- mkNonce
-
-    sleep 3 *> broadcastPactText nonce "(+ 1 2)" n0
-    sleep 2 *> broadcastPactText nonce "(+ 1 2)" n1
+    sleep 3 *> broadcastPactText "(+ 1 2)" n0
+    sleep 2 *> broadcastPactText "(+ 1 2)" n1
   _ -> impossible
 
 runTimeline :: StateT Int IO a -> IO a
@@ -315,7 +306,7 @@ runTimeline = flip evalStateT 0
 type Nonce = Int
 
 data PactTransaction = PactTransaction
-  { _pactTransaction_nonce :: Int
+  { _pactTransaction_nonce :: UTCTime
   , _pactTransaction_code  :: PactCode
   } deriving (Eq, Ord, Read, Show, Generic)
 
@@ -324,23 +315,22 @@ data PactCode
   | PactCode_File Text
   deriving (Eq, Ord, Read, Show, Generic)
 
-broadcastPactText :: MonadIO m => IORef Nonce -> Text -> InitializedNode -> m ()
-broadcastPactText nonce txt n = broadcastPact nonce (PactCode_Text txt) n
+broadcastPactText :: MonadIO m => Text -> InitializedNode -> m ()
+broadcastPactText txt n = broadcastPact (PactCode_Text txt) n
 
-broadcastPactFile :: MonadIO m => IORef Nonce -> Text -> InitializedNode -> m ()
-broadcastPactFile nonce path n = do
+broadcastPactFile :: MonadIO m => Text -> InitializedNode -> m ()
+broadcastPactFile path n = do
   p <- shelly $ Sh.absPath $ Sh.fromText $ _ASSUME_ "local network" path
-  broadcastPact nonce (PactCode_File $ Sh.toTextIgnore p) n
+  broadcastPact (PactCode_File $ Sh.toTextIgnore p) n
 
-broadcastPact :: MonadIO m => IORef Nonce -> PactCode -> InitializedNode -> m ()
-broadcastPact nonceRef code n = do
+broadcastPact :: MonadIO m => PactCode -> InitializedNode -> m ()
+broadcastPact code n = do
   let
     cfg = _initializedNode_config n
     rpc' = _configRPC_laddr $ _config_rpc cfg
     rpc = fromMaybe rpc $ T.stripPrefix "tcp://" rpc'
 
-  nonce <- liftIO $ readIORef nonceRef
-  liftIO $ modifyIORef' nonceRef (+1)
+  nonce <- liftIO $ getCurrentTime
 
   flip runReaderT broadcastEnv $ do
     log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> rpc) (Just $ tshow code)
@@ -481,7 +471,7 @@ check rs hx = withPactRollback rs $ runPactTransaction logParsed logEvaluated ac
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
-    logParsed pt = log ("Checking transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
+    logParsed pt = log ("Checking transaction with nonce: " <> tshow (_pactTransaction_nonce pt)) Nothing
     logEvaluated _ = pure ()
 
 
@@ -490,7 +480,7 @@ deliver = runPactTransaction logParsed logEvaluated accept reject
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
-    logParsed pt = log ("Delivering transaction " <> tshow (_pactTransaction_nonce pt)) Nothing
+    logParsed pt = log ("Delivering transaction with nonce: " <> tshow (_pactTransaction_nonce pt)) Nothing
     logEvaluated r = log "Pact result" (Just $ T.strip $ tshow $ Pact.pretty r)
 
 

@@ -42,9 +42,7 @@ tmux send-keys 'sleep 4' ENTER
 tmux send-keys './repl' ENTER
 rm -rf test
 tmux send-keys 'initNetwork "test" 2' ENTER
-tmux send-keys 'mkNonce' ENTER
-tmux send-keys 'let nonce = it' ENTER
-tmux send-keys 'loadInitializedNode "test/node0" >>= broadcastPactText nonce "(+ 1 2)"'
+tmux send-keys 'loadInitializedNode "test/node0" >>= broadcastPactText "(+ 1 2)"'
 tmux attach
 
 tmux select-pane -t 0
