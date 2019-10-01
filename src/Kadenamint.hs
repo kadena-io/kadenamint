@@ -473,7 +473,9 @@ coinReplFile = $(embedStringFile "pact/coin-contract/coin.repl")
 initChain :: HandlerEffects m => Pact.ReplState -> InitChain -> m (Response 'MTInitChain)
 initChain rs _ic = abortOnError $ do
   void $ ExceptT $ runPactCode rs coinPactFile
+  log "Initialized coin contract" Nothing
   void $ ExceptT $ runPactCode rs coinReplFile
+  log "Initialized coin accounts" Nothing
 
   where
     abortOnError = runExceptT >=> \case
