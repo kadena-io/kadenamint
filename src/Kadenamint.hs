@@ -202,6 +202,50 @@ withNetwork size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
 
 type Timeline m = (MonadReader Env m, MonadIO m)
 
+showBalances :: Text
+showBalances = [here|
+  { "k1" : (coin.account-balance 'k1), "k2" : (coin.account-balance 'k2), "k3" : (coin.account-balance 'k3)}
+|]
+
+debit :: Text -> Double -> Text
+debit from amount = T.intercalate " "
+  [ "(coin.debit"
+  , from
+  , tshow amount
+  , ")"
+  ]
+
+credit :: Text -> Double -> Text
+credit to amount = T.intercalate " "
+  [ "(coin.credit"
+  , to
+  , "(read-keyset " <> to <> ")"
+  , tshow amount
+  , ")"
+  ]
+
+transfer :: Text -> Text -> Double -> Text
+transfer from to amount = T.unlines [debit from amount, credit to amount]
+
+coinReplEnv :: Text
+coinReplEnv = [here|
+  (env-data { "k1" : ["keys1"], "k2": ["keys2"], "k3": ["keys3"] })
+  (env-keys ["keys1", "keys2", "keys3", "keys4"])
+  (test-capability (coin.TRANSFER))
+|]
+
+showBalancesTx :: MonadIO m => InitializedNode -> m ()
+showBalancesTx = broadcastPactText (coinReplEnv <> showBalances)
+
+debitTx :: MonadIO m => Text -> Double -> InitializedNode -> m ()
+debitTx from amount = broadcastPactText (coinReplEnv <> debit from amount <> showBalances)
+
+creditTx :: MonadIO m => Text -> Double -> InitializedNode -> m ()
+creditTx to amount = broadcastPactText (coinReplEnv <> credit to amount <> showBalances)
+
+transferTx :: MonadIO m => Text -> Text -> Double -> InitializedNode -> m ()
+transferTx from to amount = broadcastPactText (coinReplEnv <> transfer from to amount <> showBalances)
+
 timelineCoinContract :: IO ()
 timelineCoinContract = withNetwork 2 $ \root -> \case
   [n0, n1] -> do
@@ -216,52 +260,17 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
     broadcastPactFile "pact/coin-contract/coin.repl" n1
 
     sleep 3
-    broadcastPactText
-      [here|
-           (use coin)
-           { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
-      |]
-      n1
+    showBalancesTx n1
 
     sleep 3
-    broadcastPactText
-      [here|
-           (use coin)
-
-           (env-data { "k1" : ["keys1"], "k2": ["keys2"], "k3": ["keys3"] })
-           (env-keys ["keys1", "keys2", "keys3", "keys4"])
-           (define-keyset 'k1 (read-keyset "k1"))
-           (define-keyset 'k2 (read-keyset "k2"))
-           (define-keyset 'k3 (read-keyset "k3"))
-           (test-capability (TRANSFER))
-
-           (debit 'k3 0.5)
-           (credit 'k1 (read-keyset 'k1) 0.5)
-           { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
-      |]
-      n3
+    transferTx "'k3" "'k1" 0.5 n3
 
     sleep 2
     liftIO $ cancel a3
     void $ liftIO $ async $ runNode n3
 
     sleep 3
-    broadcastPactText
-      [here|
-           (use coin)
-
-           (env-data { "k1" : ["keys1"], "k2": ["keys2"], "k3": ["keys3"] })
-           (env-keys ["keys1", "keys2", "keys3", "keys4"])
-           (define-keyset 'k1 (read-keyset "k1"))
-           (define-keyset 'k2 (read-keyset "k2"))
-           (define-keyset 'k3 (read-keyset "k3"))
-           (test-capability (TRANSFER))
-
-           (debit 'k3 0.5)
-           (credit 'k2 (read-keyset 'k2) 0.5)
-           { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
-      |]
-      n0
+    transferTx "'k3" "'k2" 0.5 n0
 
   _ -> impossible
 
