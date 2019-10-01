@@ -237,16 +237,9 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
 
            (debit 'k3 0.5)
            (credit 'k1 (read-keyset 'k1) 0.5)
-      |]
-      n3
-
-    sleep 3
-    broadcastPactText
-      [here|
-           (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
       |]
-      n0
+      n3
 
     sleep 2
     liftIO $ cancel a3
@@ -266,13 +259,6 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
 
            (debit 'k3 0.5)
            (credit 'k2 (read-keyset 'k2) 0.5)
-      |]
-      n0
-
-    sleep 3
-    broadcastPactText
-      [here|
-           (use coin)
            { "k1" : (account-balance 'k1), "k2" : (account-balance 'k2), "k3" : (account-balance 'k3)}
       |]
       n0
