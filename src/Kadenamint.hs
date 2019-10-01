@@ -15,6 +15,7 @@
 
 module Kadenamint where
 
+import Control.Arrow                                    (left)
 import Control.Concurrent                               (threadDelay)
 import Control.Concurrent.Async                         (async, cancel, forConcurrently_, withAsync)
 import Control.Concurrent.MVar                          (modifyMVar_, readMVar)
@@ -31,6 +32,7 @@ import Data.ByteArray.Encoding                          (Base(Base16), convertTo
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (serverSettings)
 import Data.Default                                     (Default(..))
+import Data.FileEmbed                                   (embedStringFile)
 import Data.Functor                                     (void)
 import Data.Maybe                                       (fromMaybe)
 import Data.String                                      (IsString(..))
@@ -57,7 +59,7 @@ import Data.ByteArray.HexString                         (HexString(..))
 import Network.ABCI.Server                              (serveAppWith)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
 import Network.ABCI.Server.Middleware.RequestLogger     (mkLogStdout)
-import Network.ABCI.Types.Messages.Request              (CheckTx(..), DeliverTx(..))
+import Network.ABCI.Types.Messages.Request              (CheckTx(..), DeliverTx(..), InitChain(..))
 import Network.ABCI.Types.Messages.Response             (_checkTxCode, _deliverTxCode, _exceptionError)
 import qualified Pact.PersistPactDb as Pact
 import qualified Pact.Repl as Pact
@@ -249,28 +251,29 @@ transferTx from to amount = broadcastPactText (coinReplEnv <> transfer from to a
 timelineCoinContract :: IO ()
 timelineCoinContract = withNetwork 2 $ \root -> \case
   [n0, n1] -> do
-    sleep 3
-    broadcastPactFile "pact/coin-contract/coin.pact" n0
+    sleep 2
+    showBalancesTx n1
 
-    sleep 1
+    sleep 2
     n3 <- addNode (root <> "/nodeX") "nodeX" extraNodePorts n0
     a3 <- liftIO $ async $ runNode n3
 
-    sleep 4
-    broadcastPactFile "pact/coin-contract/coin.repl" n1
+    sleep 2
+    showBalancesTx n3
 
-    sleep 3
-    showBalancesTx n1
-
-    sleep 3
+    sleep 2
     transferTx "'k3" "'k1" 0.5 n3
 
     sleep 2
     liftIO $ cancel a3
+    flip runReaderT (coreEnv Nothing) $ log "Stopping nodeX" Nothing
+
+    sleep 2
+    transferTx "'k3" "'k2" 0.5 n0
+
+    sleep 2
     void $ liftIO $ async $ runNode n3
 
-    sleep 3
-    transferTx "'k3" "'k2" 0.5 n0
 
   _ -> impossible
 
@@ -453,13 +456,31 @@ app rs = App $ \case
   RequestFlush _ -> pure def
   RequestInfo _ -> pure def
   RequestSetOption _ -> pure def
-  RequestInitChain _ -> pure def
+  RequestInitChain ic -> initChain rs ic
   RequestQuery _ -> pure def
   RequestBeginBlock _ -> pure def
   RequestCheckTx (CheckTx hx) -> check rs hx
   RequestDeliverTx (DeliverTx hx) -> deliver rs hx
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
+
+coinPactFile :: Text
+coinPactFile = $(embedStringFile "pact/coin-contract/coin.pact")
+
+coinReplFile :: Text
+coinReplFile = $(embedStringFile "pact/coin-contract/coin.repl")
+
+initChain :: HandlerEffects m => Pact.ReplState -> InitChain -> m (Response 'MTInitChain)
+initChain rs _ic = abortOnError $ do
+  void $ ExceptT $ runPactCode rs coinPactFile
+  void $ ExceptT $ runPactCode rs coinReplFile
+
+  where
+    abortOnError = runExceptT >=> \case
+      Right _termName -> pure def
+      Left err -> do
+        log "Init chain failed" (Just err)
+        error $ T.unpack err
 
 check :: HandlerEffects m => Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
 check rs hx = withPactRollback rs $ runPactTransaction logParsed logEvaluated accept reject rs hx
@@ -496,6 +517,9 @@ withPactRollback rs action = do
     restorePactState (dbEnvVar, oldDb) = liftIO $
       modifyMVar_ dbEnvVar $ pure . (Pact.db .~ oldDb)
 
+runPactCode :: HandlerEffects m => Pact.ReplState -> Text -> m (Either Text (Pact.Term Pact.Name))
+runPactCode rs code = liftIO $ fmap (left T.pack) $ evalStateT (Pact.evalRepl' $ T.unpack code) rs
+
 runPactTransaction :: HandlerEffects m => (PactTransaction -> m ()) -> (Pact.Term Pact.Name -> m ()) -> m a -> m a -> Pact.ReplState -> HexString -> m a
 runPactTransaction logParsed logEvaluated accept reject rs hx = rejectOnError $ do
   txt <- decode hx
@@ -513,12 +537,11 @@ runPactTransaction logParsed logEvaluated accept reject rs hx = rejectOnError $ 
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
       . liftEither . decodeHexString
 
+    eval = withExceptT (\err -> ("Pact error", Just err)) . ExceptT . runPactCode rs
+
     parse txt = liftEither $ case T.readMaybe (T.unpack txt) of
       Nothing -> Left ("Failed to parse transaction", Nothing)
       Just p -> Right p
-
-    eval code = withExceptT (\err -> ("Pact error", Just $ T.pack err))
-      $ ExceptT $ liftIO $ evalStateT (Pact.evalRepl' $ T.unpack code) rs
 
     rejectOnError = runExceptT >=> \case
       Left (h,b) -> log ("Rejecting transaction - " <> h) b *> reject

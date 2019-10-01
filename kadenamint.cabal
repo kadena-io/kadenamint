@@ -14,6 +14,7 @@ library
                , colour
                , conduit-extra
                , data-default
+               , file-embed
                , here
                , hs-abci-server
                , hs-abci-types
