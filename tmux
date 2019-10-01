@@ -41,8 +41,8 @@ sleep 1
 tmux send-keys 'sleep 4' ENTER
 tmux send-keys './repl' ENTER
 rm -rf test
-tmux send-keys 'initNetwork "test" 2' ENTER
-tmux send-keys 'loadInitializedNode "test/node0" >>= broadcastPactText "(+ 1 2)"'
+tmux send-keys 'initNetwork "test" 3' ENTER
+tmux send-keys 'loadInitializedNode "test/node0" >>= showBalancesTx'
 tmux attach
 
 tmux select-pane -t 0
