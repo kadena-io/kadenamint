@@ -113,7 +113,7 @@ nthNodePorts index =
   in NodePorts offset (offset + 1) (offset + 2)
 
 extraNodePorts :: NodePorts
-extraNodePorts = nthNodePorts 4
+extraNodePorts = nthNodePorts (negate 1)
 
 addNode :: MonadIO m => Text -> Text -> NodePorts -> InitializedNode -> m InitializedNode
 addNode home moniker ports preExistingNode = shelly $ do
@@ -209,7 +209,7 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
     broadcastPactFile "pact/coin-contract/coin.pact" n0
 
     sleep 1
-    n3 <- addNode (root <> "/node3") "node3" extraNodePorts n0
+    n3 <- addNode (root <> "/nodeX") "nodeX" extraNodePorts n0
     a3 <- liftIO $ async $ runNode n3
 
     sleep 4
@@ -286,7 +286,7 @@ timelineHelloWorld = withNetwork 3 $ \root -> \case
     sleep 2 *> broadcastPactText "(hello-world.set-message \"hello\")" n1
 
     sleep 1
-    n3 <- addNode (root <> "/node3") "node3" extraNodePorts n0
+    n3 <- addNode (root <> "/nodeX") "nodeX" extraNodePorts n0
     void $ liftIO $ async $ runNode n3
 
     sleep 3 *> broadcastPactText "(hello-world.greet)" n3
