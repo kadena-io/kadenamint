@@ -320,7 +320,7 @@ broadcastPactText txt n = broadcastPact (PactCode_Text txt) n
 
 broadcastPactFile :: MonadIO m => Text -> InitializedNode -> m ()
 broadcastPactFile path n = do
-  p <- shelly $ Sh.absPath $ Sh.fromText $ _ASSUME_ "local network" path
+  p <- shelly $ Sh.absPath $ Sh.fromText $ _ASSUME_ "network running on local host " path
   broadcastPact (PactCode_File $ Sh.toTextIgnore p) n
 
 broadcastPact :: MonadIO m => PactCode -> InitializedNode -> m ()
@@ -526,7 +526,7 @@ runPactTransaction logParsed logEvaluated accept reject rs hx = rejectOnError $ 
       $ ExceptT $ liftIO $ evalStateT (Pact.evalRepl' $ T.unpack code) rs
 
     rejectOnError = runExceptT >=> \case
-      Left (h,b) -> log h b *> reject
+      Left (h,b) -> log ("Rejecting transaction - " <> h) b *> reject
       Right () -> accept
 
 {- Utils -}
