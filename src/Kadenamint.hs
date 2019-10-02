@@ -239,6 +239,9 @@ coinReplEnv = [here|
 showBalancesTx :: MonadIO m => InitializedNode -> m ()
 showBalancesTx = broadcastPactText (coinReplEnv <> showBalances)
 
+showBalanceTx :: MonadIO m => Text -> InitializedNode -> m ()
+showBalanceTx acct = broadcastPactText ("(coin.account-balance '" <> acct <> ")")
+
 debitTx :: MonadIO m => Text -> Double -> InitializedNode -> m ()
 debitTx from amount = broadcastPactText (coinReplEnv <> debit from amount <> showBalances)
 
