@@ -2,6 +2,7 @@ name: kadenamint
 version: 0.1
 cabal-version: >= 1.8
 build-type: Simple
+license: Apache-2.0
 
 library
   hs-source-dirs: src
