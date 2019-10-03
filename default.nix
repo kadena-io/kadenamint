@@ -27,7 +27,7 @@ in rp.project ({ pkgs, hackGet, ... }:
   in {
     inherit withHoogle;
 
-    passthru = { nixpkgs = pkgs; };
+    passthru = { nixpkgs = recentNixpkgs; };
 
     packages = {
       inherit pact which;
