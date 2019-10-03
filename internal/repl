@@ -1,0 +1,1 @@
+cabal new-repl --repl-options='-ignore-dot-ghci' --repl-options='-ghci-script repl.ghci'
