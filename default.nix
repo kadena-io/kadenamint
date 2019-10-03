@@ -27,6 +27,8 @@ in rp.project ({ pkgs, hackGet, ... }:
   in {
     inherit withHoogle;
 
+    passthru = { nixpkgs = pkgs; };
+
     packages = {
       inherit pact which;
       kadenamint = purifyEnvironment ./.;
