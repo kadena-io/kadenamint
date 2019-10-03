@@ -132,6 +132,9 @@ addNode home moniker ports preExistingNode = shelly $ do
   pure $ n &
     initializedNode_config .~ newCfg
 
+runNodeDir :: MonadIO m => Text -> m ()
+runNodeDir dir = loadNode dir >>= runNode
+
 runNode :: MonadIO m => InitializedNode -> m ()
 runNode n = void $ do
   let
