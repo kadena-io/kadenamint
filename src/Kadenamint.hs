@@ -120,7 +120,7 @@ extraNodePorts = nthNodePorts (negate 1)
 addNode :: MonadIO m => Text -> Text -> NodePorts -> InitializedNode -> m InitializedNode
 addNode home moniker ports preExistingNode = shelly $ do
   void $ tendermint (GlobalFlags home) "init" []
-  n <- loadInitializedNode home
+  n <- loadNode home
 
   cp (genesisFile preExistingNode) (configDir n)
   let
@@ -149,7 +149,7 @@ initNetwork root size = shelly $ do
   for [0..size-1] $ \i -> do
     let
       home = root <> "/node" <> tshow i
-    n <- loadInitializedNode home
+    n <- loadNode home
     let
       oldCfg = n ^. initializedNode_config
       ports = nthNodePorts i
@@ -360,8 +360,8 @@ toEndpoint = \case
     f = ("broadcast_tx_" <>)
 
 {- Tendermint CLI -}
-loadInitializedNode :: MonadIO m => Text -> m InitializedNode
-loadInitializedNode home = pure (InitializedNode home)
+loadNode :: MonadIO m => Text -> m InitializedNode
+loadNode home = pure (InitializedNode home)
   <*> loadConfig home
   <*> shelly (silently $ fmap T.strip $ tendermint (GlobalFlags home) "show_node_id" [])
 

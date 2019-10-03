@@ -16,25 +16,25 @@ tmux split-window -h -p 50
 tmux select-pane -t 0
 tmux send-keys 'sleep 0' ENTER
 tmux send-keys './repl' ENTER
-tmux send-keys 'loadInitializedNode "test/node0" >>= runNode'
+tmux send-keys 'loadNode "test/node0" >>= runNode'
 
 tmux select-pane -t 1
 sleep 1
 tmux send-keys 'sleep 1' ENTER
 tmux send-keys './repl' ENTER
-tmux send-keys 'loadInitializedNode "test/node1" >>= runNode'
+tmux send-keys 'loadNode "test/node1" >>= runNode'
 
 tmux select-pane -t 2
 sleep 1
 tmux send-keys 'sleep 2' ENTER
 tmux send-keys './repl' ENTER
-tmux send-keys 'loadInitializedNode "test/node2" >>= runNode'
+tmux send-keys 'loadNode "test/node2" >>= runNode'
 
 tmux select-pane -t 3
 sleep 1
 tmux send-keys 'sleep 3' ENTER
 tmux send-keys './repl' ENTER
-tmux send-keys 'loadInitializedNode "test/node0" >>= addNode "test/nodeX" "nodeX" extraNodePorts >>= runNode'
+tmux send-keys 'loadNode "test/node0" >>= addNode "test/nodeX" "nodeX" extraNodePorts >>= runNode'
 
 tmux select-pane -t 4
 sleep 1
@@ -42,7 +42,7 @@ tmux send-keys 'sleep 4' ENTER
 tmux send-keys './repl' ENTER
 rm -rf test
 tmux send-keys 'initNetwork "test" 3' ENTER
-tmux send-keys 'loadInitializedNode "test/node0" >>= showBalancesTx'
+tmux send-keys 'loadNode "test/node0" >>= showBalancesTx'
 tmux attach
 
 tmux select-pane -t 0
