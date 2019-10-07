@@ -1,2 +1,2 @@
 DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
-cd $DIR && nix-shell default.nix --arg withHoogle true -A shells.ghc --command "hoogle server -p 8080 --local"
+cd $DIR && nix-shell default.nix -A shells.ghc --arg withHoogle true --command "hoogle server -p 8080 --local"
