@@ -18,32 +18,28 @@ $TMUX select-pane -t top
 $TMUX split-window -h -p 50
 
 $TMUX select-pane -t 0
-$TMUX send-keys 'sleep 0' ENTER
 $TMUX send-keys './internal/repl' ENTER
 $TMUX send-keys 'runNodeDir "test/node0"'
+sleep 1
 
 $TMUX select-pane -t 1
-sleep 1
-$TMUX send-keys 'sleep 1' ENTER
 $TMUX send-keys './internal/repl' ENTER
 $TMUX send-keys 'runNodeDir "test/node1"'
+sleep 1
 
 $TMUX select-pane -t 2
-sleep 1
-$TMUX send-keys 'sleep 2' ENTER
 $TMUX send-keys './internal/repl' ENTER
 $TMUX send-keys 'runNodeDir "test/node2"'
+sleep 1
 
 $TMUX select-pane -t 3
-sleep 1
-$TMUX send-keys 'sleep 3' ENTER
 $TMUX send-keys './internal/repl' ENTER
 $TMUX send-keys 'loadNode "test/node0" >>= addNode "test/nodeX" "nodeX" extraNodePorts >>= runNode'
+sleep 1
 
 $TMUX select-pane -t 4
-sleep 1
-$TMUX send-keys 'sleep 4' ENTER
 $TMUX send-keys './internal/repl' ENTER
+
 rm -rf test
 $TMUX send-keys 'initNetwork "test" 3' ENTER
 $TMUX send-keys 'loadNode "test/node0" >>= showBalancesTx'
