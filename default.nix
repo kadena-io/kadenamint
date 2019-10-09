@@ -44,7 +44,7 @@ in rp.project ({ pkgs, hackGet, ... }:
       (self: super: {
         kadenamint = overrideCabal super.kadenamint (drv: {
           buildTools = (drv.buildTools or []) ++ [ pkgs.buildPackages.makeWrapper ];
-          executableSystemDepends = (drv.executableSystemDepends or []) ++ [ tendermint ];
+          executableSystemDepends = (drv.executableSystemDepends or []) ++ [ tendermint pkgs.z3];
           postFixup = ''
             ${drv.postFixup or ""}
             wrapProgram "$out"/bin/kadenamint --set SBV_Z3 ${pkgs.z3}/bin/z3
