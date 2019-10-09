@@ -43,7 +43,12 @@ in rp.project ({ pkgs, hackGet, ... }:
       (import (pact + /overrides.nix) pkgs)
       (self: super: {
         kadenamint = overrideCabal super.kadenamint (drv: {
+          buildTools = (drv.buildTools or []) ++ [ pkgs.buildPackages.makeWrapper ];
           executableSystemDepends = (drv.executableSystemDepends or []) ++ [ tendermint ];
+          postFixup = ''
+            ${drv.postFixup or ""}
+            wrapProgram "$out"/bin/kadenamint --set SBV_Z3 ${pkgs.z3}/bin/z3
+          '';
         });
 
         tomland = dontCheck (self.callHackageDirect {
