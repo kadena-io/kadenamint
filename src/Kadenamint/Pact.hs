@@ -1,0 +1,124 @@
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric#-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NumDecimals #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ViewPatterns #-}
+
+module Kadenamint.Pact where
+
+import Control.Lens (set, (&), (^.), (.~))
+import Control.Monad.IO.Class (MonadIO(..))
+import qualified Data.Aeson as Aeson
+import Data.Bool (bool)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString.Base16 as B16
+import Data.Default (Default (..))
+import Data.FileEmbed (embedFile)
+import Data.Foldable (Foldable(..))
+import qualified Data.HashMap.Strict as HM
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
+import qualified Data.Yaml as Y
+
+import Pact.ApiReq (ApiKeyPair(..), mkApiReq, mkExec, mkKeyPairs)
+import Pact.Interpreter (EvalResult(..), MsgData(..), PactDbEnv, evalContinuation, evalExec
+                        , initRefStore, initSchema, mkSQLiteEnv, setupEvalEnv)
+import Pact.Gas (freeGasEnv)
+import Pact.PersistPactDb (DbEnv)
+import Pact.Persist.SQLite (SQLite, SQLiteConfig(..))
+import Pact.Types.Command (Command(..), ParsedCode(..), Payload(..), ProcessedCommand(..), pSigners, verifyCommand)
+import Pact.Types.ChainMeta (PublicMeta, pmSender)
+import Pact.Types.Command (cmdPayload, pPayload)
+import Pact.Types.Crypto (PPKScheme(..), PrivateKeyBS(..), PublicKeyBS(..))
+import Pact.Types.Logger (Loggers(newLogger), alwaysLog)
+import Pact.Types.RPC (PactRPC(..), ExecMsg(..))
+import Pact.Types.SPV (noSPVSupport)
+import Pact.Types.Hash (Hash(..))
+import Pact.Types.Persistence (ExecutionMode(..))
+import Pact.Types.Capability (Capability(..), CapScope(..), CapSlot(..), capStack)
+import Pact.Types.Runtime (EvalState, ModuleName(..), QualifiedName(..), evalCapabilities, permissiveNamespacePolicy)
+
+type PactEnv = PactDbEnv (DbEnv SQLite)
+
+initDb :: MonadIO m => FilePath -> m (PactDbEnv (DbEnv SQLite))
+initDb path = liftIO $ do
+  pactDbEnv <- mkSQLiteEnv (newLogger alwaysLog "") True (SQLiteConfig path []) alwaysLog
+  initSchema pactDbEnv
+  pure pactDbEnv
+
+execCmd :: MonadIO m => PactDbEnv (DbEnv SQLite) -> EvalState -> Bool -> Command Text -> m EvalResult
+execCmd pactDbEnv evalState shouldRollback cmd = liftIO $ do
+  let
+    setupEvalEnv' execData = setupEvalEnv
+      pactDbEnv
+      Nothing
+      (bool Transactional Local shouldRollback)
+      (MsgData (fromMaybe Aeson.Null execData) Nothing (Hash ""))
+      initRefStore
+      freeGasEnv
+      permissiveNamespacePolicy
+      noSPVSupport
+      def
+
+  case verifyCommand $ fmap T.encodeUtf8 cmd of
+    f@ProcFail{} -> error (show f)
+    ProcSucc (c :: Command (Payload PublicMeta ParsedCode)) -> do
+      let p = c ^. cmdPayload
+          signers = p ^. pSigners
+      case p ^. pPayload of
+        Exec (ExecMsg code execData) -> evalExec signers evalState (setupEvalEnv' (Just execData)) code
+        Continuation cont -> evalContinuation signers evalState (setupEvalEnv' Nothing) cont
+
+execYaml :: MonadIO m => PactDbEnv (DbEnv SQLite) -> FilePath -> m EvalResult
+execYaml pactDbEnv fp = do
+  (_, exec) <- liftIO $ mkApiReq fp
+  execCmd pactDbEnv (initCapabilities [magic_COINBASE]) False exec
+
+mkExec' :: MonadIO m => Text -> Maybe Text -> m (Command Text)
+mkExec' code sender = liftIO $ do
+  senderKey <- traverse stockKey sender
+  kps <- mkKeyPairs $ toList senderKey
+
+  mkExec
+    (T.unpack code)
+    Aeson.Null
+    (def & maybe id (pmSender .~) sender)
+    kps
+    Nothing
+    Nothing
+
+stockKey :: Text -> IO ApiKeyPair
+stockKey s = do
+    let Right (Y.Object o) = Y.decodeEither' stockKeyFile
+        Just (Y.Object kp) = HM.lookup s o
+        Just (Y.String pub) = HM.lookup "public" kp
+        Just (Y.String priv) = HM.lookup "secret" kp
+        mkKeyBS = fst . B16.decode . T.encodeUtf8
+    return $ ApiKeyPair (PrivBS $ mkKeyBS priv) (Just $ PubBS $ mkKeyBS pub) Nothing (Just ED25519) Nothing
+
+stockKeyFile :: ByteString
+stockKeyFile = $(embedFile "pact/coin-contract/keys.yaml")
+
+initCapabilities :: [CapSlot Capability] -> EvalState
+initCapabilities cs = set (evalCapabilities . capStack) cs def
+
+magic_COINBASE :: CapSlot Capability
+magic_COINBASE = mkMagicCapSlot "COINBASE"
+
+mkMagicCapSlot :: Text -> CapSlot Capability
+mkMagicCapSlot c = CapSlot CapCallStack cap []
+  where
+    mn = ModuleName "coin" Nothing
+    fqn = QualifiedName mn c def
+    cap = UserCapability fqn []

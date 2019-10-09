@@ -15,10 +15,8 @@
 
 module Kadenamint where
 
-import Control.Arrow                                    (left)
 import Control.Concurrent                               (threadDelay)
 import Control.Concurrent.Async                         (async, cancel, forConcurrently_, withAsync)
-import Control.Concurrent.MVar                          (modifyMVar_, readMVar)
 import Control.Lens                                     (imap, strict, view, (&), (^.), (.~))
 import Control.Monad                                    ((>=>))
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
@@ -26,13 +24,13 @@ import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), asks, runReaderT)
 import Control.Monad.State.Strict                       (StateT(..), evalStateT)
 import Control.Monad.Trans.Class                        (lift)
+import qualified Data.Aeson as Aeson
 import Data.Binary.Builder                              (toLazyByteString)
 import Data.Bool                                        (bool)
 import Data.ByteArray.Encoding                          (Base(Base16), convertToBase)
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.Conduit.Network                             (serverSettings)
 import Data.Default                                     (Default(..))
-import Data.FileEmbed                                   (embedStringFile)
 import Data.Functor                                     (void)
 import Data.Maybe                                       (fromMaybe)
 import Data.String                                      (IsString(..))
@@ -42,7 +40,6 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T          hiding (replace)
 import qualified Data.Text.IO as T
-import Data.Time                                        (UTCTime, getCurrentTime)
 import Data.Traversable                                 (for)
 import GHC.Generics                                     (Generic)
 import Network.HTTP.Types                               (encodePath)
@@ -61,12 +58,11 @@ import Network.ABCI.Server.App                          (App(..), Request(..), R
 import Network.ABCI.Server.Middleware.RequestLogger     (mkLogStdout)
 import Network.ABCI.Types.Messages.Request              (CheckTx(..), DeliverTx(..), InitChain(..))
 import Network.ABCI.Types.Messages.Response             (_checkTxCode, _deliverTxCode, _exceptionError)
-import qualified Pact.PersistPactDb as Pact
-import qualified Pact.Repl as Pact
-import qualified Pact.Repl.Types as Pact
+import qualified Pact.Interpreter as Pact
+import qualified Pact.Types.Command as Pact
 import qualified Pact.Types.Pretty as Pact
-import qualified Pact.Types.Runtime as Pact
 
+import Kadenamint.Pact
 import Kadenamint.Tendermint
 
 {- Process orchestration -}
@@ -137,12 +133,8 @@ runNodeDir dir = loadNode dir >>= runNode
 
 runNode :: MonadIO m => InitializedNode -> m ()
 runNode n = void $ do
-  let
-    cfg = _initializedNode_config n
-    moniker = _config_moniker cfg
-
-  liftIO $ withAsync (runABCI cfg) $ \_ ->
-    flip runReaderT (coreEnv $ Just moniker) $ do
+  liftIO $ withAsync (runABCI n) $ \_ ->
+    flip runReaderT (coreEnv $ Just $ _config_moniker $ _initializedNode_config n) $ do
       log "Launching" Nothing
       shelly $ tendermintNode $ GlobalFlags $ _initializedNode_home n
 
@@ -209,50 +201,29 @@ type Timeline m = (MonadReader Env m, MonadIO m)
 
 showBalances :: Text
 showBalances = [here|
-  { "k1" : (coin.account-balance 'k1), "k2" : (coin.account-balance 'k2), "k3" : (coin.account-balance 'k3)}
+  { "sender00" : (coin.account-balance 'sender00)
+  , "sender01" : (coin.account-balance 'sender01)
+  , "sender02" : (coin.account-balance 'sender02)
+  }
 |]
-
-debit :: Text -> Double -> Text
-debit from amount = T.intercalate " "
-  [ "(coin.debit"
-  , from
-  , tshow amount
-  , ")"
-  ]
-
-credit :: Text -> Double -> Text
-credit to amount = T.intercalate " "
-  [ "(coin.credit"
-  , to
-  , "(read-keyset " <> to <> ")"
-  , tshow amount
-  , ")"
-  ]
 
 transfer :: Text -> Text -> Double -> Text
-transfer from to amount = T.unlines [debit from amount, credit to amount]
-
-coinReplEnv :: Text
-coinReplEnv = [here|
-  (env-data { "k1" : ["keys1"], "k2": ["keys2"], "k3": ["keys3"] })
-  (env-keys ["keys1", "keys2", "keys3", "keys4"])
-  (test-capability (coin.TRANSFER))
-|]
+transfer from to amount = T.intercalate " "
+  [ "(coin.transfer"
+  , "'" <> from
+  , "'" <> to
+  , tshow amount
+  , ")"
+  ]
 
 showBalancesTx :: MonadIO m => InitializedNode -> m ()
-showBalancesTx = broadcastPactText (coinReplEnv <> showBalances)
+showBalancesTx = broadcastPact showBalances
 
 showBalanceTx :: MonadIO m => Text -> InitializedNode -> m ()
-showBalanceTx acct = broadcastPactText ("(coin.account-balance '" <> acct <> ")")
-
-debitTx :: MonadIO m => Text -> Double -> InitializedNode -> m ()
-debitTx from amount = broadcastPactText (coinReplEnv <> debit from amount <> showBalances)
-
-creditTx :: MonadIO m => Text -> Double -> InitializedNode -> m ()
-creditTx to amount = broadcastPactText (coinReplEnv <> credit to amount <> showBalances)
+showBalanceTx acct = broadcastPact ("(coin.account-balance '" <> acct <> ")")
 
 transferTx :: MonadIO m => Text -> Text -> Double -> InitializedNode -> m ()
-transferTx from to amount = broadcastPactText (coinReplEnv <> transfer from to amount <> showBalances)
+transferTx from to amount = broadcastPactSigned (Just from) (transfer from to amount <> showBalances)
 
 timelineCoinContract :: IO ()
 timelineCoinContract = withNetwork 2 $ \root -> \case
@@ -268,14 +239,14 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
     showBalancesTx n3
 
     sleep 2
-    transferTx "'k3" "'k1" 0.5 n3
+    transferTx "sender00" "sender01" 1 n3
 
     sleep 2
     liftIO $ cancel a3
     flip runReaderT (coreEnv Nothing) $ log "Stopping nodeX" Nothing
 
     sleep 2
-    transferTx "'k3" "'k2" 0.5 n0
+    transferTx "sender00" "sender02" 1 n0
 
     sleep 2
     void $ liftIO $ async $ runNode n3
@@ -283,25 +254,13 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
 
   _ -> impossible
 
-timelineHelloWorld :: IO ()
-timelineHelloWorld = withNetwork 3 $ \root -> \case
-  [n0, n1, _n2] -> do
-    sleep 3 *> broadcastPactFile "pact/hello-world.pact" n0
-    sleep 2 *> broadcastPactText "(hello-world.set-message \"hello\")" n1
-
-    sleep 1
-    n3 <- addNode (root <> "/nodeX") "nodeX" extraNodePorts n0
-    void $ liftIO $ async $ runNode n3
-
-    sleep 3 *> broadcastPactText "(hello-world.greet)" n3
-  _ -> impossible
-
 timelineRepl :: IO ()
 timelineRepl = withNetwork 2 $ \_ -> \case
   [n0, n1] -> do
-    sleep 3 *> broadcastPactText "(+ 1 2)" n0
-    sleep 2 *> broadcastPactText "(+ 1 2)" n1
+    sleep 3 *> broadcastPact "(+ 1 2)" n0
+    sleep 2 *> broadcastPact "(+ 1 2)" n1
   _ -> impossible
+
 
 runTimeline :: StateT Int IO a -> IO a
 runTimeline = flip evalStateT 0
@@ -309,36 +268,21 @@ runTimeline = flip evalStateT 0
 {- Tendermint RPC -}
 type Nonce = Int
 
-data PactTransaction = PactTransaction
-  { _pactTransaction_nonce :: UTCTime
-  , _pactTransaction_code  :: PactCode
-  } deriving (Eq, Ord, Read, Show, Generic)
+broadcastPact :: MonadIO m => Text -> InitializedNode -> m ()
+broadcastPact = broadcastPactSigned Nothing
 
-data PactCode
-  = PactCode_Text Text
-  | PactCode_File Text
-  deriving (Eq, Ord, Read, Show, Generic)
-
-broadcastPactText :: MonadIO m => Text -> InitializedNode -> m ()
-broadcastPactText txt n = broadcastPact (PactCode_Text txt) n
-
-broadcastPactFile :: MonadIO m => Text -> InitializedNode -> m ()
-broadcastPactFile path n = do
-  p <- shelly $ Sh.absPath $ Sh.fromText $ _ASSUME_ "network running on local host " path
-  broadcastPact (PactCode_File $ Sh.toTextIgnore p) n
-
-broadcastPact :: MonadIO m => PactCode -> InitializedNode -> m ()
-broadcastPact code n = do
+broadcastPactSigned :: MonadIO m => Maybe Text -> Text -> InitializedNode -> m ()
+broadcastPactSigned sender code n = do
   let
     cfg = _initializedNode_config n
     rpc' = _configRPC_laddr $ _config_rpc cfg
     rpc = fromMaybe rpc $ T.stripPrefix "tcp://" rpc'
 
-  nonce <- liftIO $ getCurrentTime
+  cmd <- mkExec' code sender
 
   flip runReaderT broadcastEnv $ do
     log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> rpc) (Just $ tshow code)
-    broadcastTransaction rpc $ tshow $ PactTransaction nonce code
+    broadcastTransaction rpc $ tshow $ Aeson.toJSON cmd
 
 broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> Text -> m ()
 broadcastTransaction addr t = do
@@ -425,9 +369,13 @@ tendermintNodeCmd :: GlobalFlags -> (Sh.FilePath, [Text])
 tendermintNodeCmd gf = tendermintCmd gf "node" []
 
 {- ABCI app -}
-runABCI :: Config -> IO ()
-runABCI cfg = do
-  rs <- Pact.initReplState Pact.StringEval Nothing
+runABCI :: InitializedNode -> IO ()
+runABCI n = do
+  let cfg = n ^. initializedNode_config
+      home = n ^. initializedNode_home
+
+  pactDbEnv <- initDb $ T.unpack home <> "/pact-db"
+
   _logger <- mkLogStdout -- too noisy
 
   let
@@ -450,37 +398,32 @@ runABCI cfg = do
 
   serveAppWith (serverSettings port' host') mempty
     $ transformApp transformHandler
-    $ app rs
+    $ app pactDbEnv
 
 type Err = Text
 type HandlerT = ReaderT Env (ExceptT Err IO)
 type HandlerEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
-app :: HandlerEffects m => Pact.ReplState -> App m
-app rs = App $ \case
+app :: HandlerEffects m => PactEnv -> App m
+app pactDbEnv = App $ \case
   RequestEcho _ -> pure def
   RequestFlush _ -> pure def
   RequestInfo _ -> pure def
   RequestSetOption _ -> pure def
-  RequestInitChain ic -> initChain rs ic
+  RequestInitChain ic -> initChain pactDbEnv ic
   RequestQuery _ -> pure def
   RequestBeginBlock _ -> pure def
-  RequestCheckTx (CheckTx hx) -> check rs hx
-  RequestDeliverTx (DeliverTx hx) -> deliver rs hx
+  RequestCheckTx (CheckTx hx) -> check pactDbEnv hx
+  RequestDeliverTx (DeliverTx hx) -> deliver pactDbEnv hx
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
 
-coinPactFile :: Text
-coinPactFile = $(embedStringFile "pact/coin-contract/coin.pact")
-
-coinReplFile :: Text
-coinReplFile = $(embedStringFile "pact/coin-contract/coin.repl")
-
-initChain :: HandlerEffects m => Pact.ReplState -> InitChain -> m (Response 'MTInitChain)
-initChain rs _ic = abortOnError $ do
-  void $ ExceptT $ runPactCode rs coinPactFile
+initChain :: HandlerEffects m => PactEnv -> InitChain -> m (Response 'MTInitChain)
+initChain pactDbEnv _ic = abortOnError $ do
+  let eval = execYaml pactDbEnv
+  void $ eval "pact/coin-contract/load-coin-contract.yaml"
   log "Initialized coin contract" Nothing
-  void $ ExceptT $ runPactCode rs coinReplFile
+  void $ eval "pact/coin-contract/grants.yaml"
   log "Initialized coin accounts" Nothing
 
   where
@@ -490,66 +433,50 @@ initChain rs _ic = abortOnError $ do
         log "Init chain failed" (Just err)
         error $ T.unpack err
 
-check :: HandlerEffects m => Pact.ReplState -> HexString -> m (Response 'MTCheckTx)
-check rs hx = withPactRollback rs $ runPactTransaction logParsed logEvaluated accept reject rs hx
+check :: HandlerEffects m => PactEnv -> HexString -> m (Response 'MTCheckTx)
+check pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pactEnv True hx
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
-    logParsed pt = log ("Checking transaction with nonce: " <> tshow (_pactTransaction_nonce pt)) Nothing
+    logParsed pt = log ("Checking command with hash: " <> tshow (Pact._cmdHash pt)) Nothing
     logEvaluated _ = pure ()
 
-
-deliver :: HandlerEffects m => Pact.ReplState -> HexString -> m (Response 'MTDeliverTx)
-deliver = runPactTransaction logParsed logEvaluated accept reject
+deliver :: HandlerEffects m => PactEnv -> HexString -> m (Response 'MTDeliverTx)
+deliver pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pactEnv False hx
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
-    logParsed pt = log ("Delivering transaction with nonce: " <> tshow (_pactTransaction_nonce pt)) Nothing
-    logEvaluated r = log "Pact result" (Just $ T.strip $ tshow $ Pact.pretty r)
+    logParsed pt = log ("Delivering command with hash: " <> tshow (Pact._cmdHash pt)) Nothing
+    logEvaluated r = log "Pact result" (Just $ T.strip $ tshow $ Pact.pretty $ Pact._erOutput r)
 
-
-withPactRollback :: HandlerEffects m => Pact.ReplState -> m a -> m a
-withPactRollback rs action = do
-  snapshot <- snapshotPactState
-  res <- action
-  restorePactState snapshot
-  pure res
-
-  where
-    snapshotPactState = liftIO $ do
-      libState <- readMVar $ rs ^. Pact.rEnv . Pact.eePactDbVar
-      let dbEnvVar = libState ^. Pact.rlsPure
-      oldDb <- view Pact.db <$> readMVar dbEnvVar
-      pure (dbEnvVar, oldDb)
-
-    restorePactState (dbEnvVar, oldDb) = liftIO $
-      modifyMVar_ dbEnvVar $ pure . (Pact.db .~ oldDb)
-
-runPactCode :: HandlerEffects m => Pact.ReplState -> Text -> m (Either Text (Pact.Term Pact.Name))
-runPactCode rs code = liftIO $ fmap (left T.pack) $ evalStateT (Pact.evalRepl' $ T.unpack code) rs
-
-runPactTransaction :: HandlerEffects m => (PactTransaction -> m ()) -> (Pact.Term Pact.Name -> m ()) -> m a -> m a -> Pact.ReplState -> HexString -> m a
-runPactTransaction logParsed logEvaluated accept reject rs hx = rejectOnError $ do
+runPactTransaction
+  :: HandlerEffects m
+  => (Pact.Command Text -> m ())
+  -> (Pact.EvalResult -> m ())
+  -> m a
+  -> m a
+  -> PactEnv
+  -> Bool
+  -> HexString
+  -> m a
+runPactTransaction logParsed logEvaluated accept reject pactDbEnv shouldRollback hx = rejectOnError $ do
   txt <- decode hx
   pt <- parse txt
-
   lift $ logParsed pt
-
-  r <- eval =<< case _pactTransaction_code pt of
-    PactCode_Text t -> pure t
-    PactCode_File f -> shelly $ Sh.readfile $ Sh.fromText f
-
+  r <- eval pt
   lift $ logEvaluated r
 
   where
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
       . liftEither . decodeHexString
 
-    eval = withExceptT (\err -> ("Pact error", Just err)) . ExceptT . runPactCode rs
+    eval = execCmd pactDbEnv def shouldRollback
 
     parse txt = liftEither $ case T.readMaybe (T.unpack txt) of
       Nothing -> Left ("Failed to parse transaction", Nothing)
-      Just p -> Right p
+      Just v -> case Aeson.fromJSON v of
+        Aeson.Error err -> Left ("Failed to parse JSON:", Just (T.pack err))
+        Aeson.Success t -> Right t
 
     rejectOnError = runExceptT >=> \case
       Left (h,b) -> log ("Rejecting transaction - " <> h) b *> reject
