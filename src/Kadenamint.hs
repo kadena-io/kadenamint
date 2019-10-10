@@ -117,7 +117,7 @@ broadcastPactSigned sender code n = do
   let
     cfg = _initializedNode_config n
     rpc' = _configRPC_laddr $ _config_rpc cfg
-    rpc = fromMaybe rpc $ T.stripPrefix "tcp://" rpc'
+    rpc = fromMaybe rpc' $ T.stripPrefix "tcp://" rpc'
 
   cmd <- mkExec' code sender
 
