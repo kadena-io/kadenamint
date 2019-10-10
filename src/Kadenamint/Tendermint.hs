@@ -78,7 +78,7 @@ loadConfig home = liftIO $ do
   case Toml.decode configCodec toml of
     Left err -> do
       print toml
-      print $ err
+      print err
       error "Failed decoding"
     Right config -> pure config
 

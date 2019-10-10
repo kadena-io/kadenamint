@@ -1,17 +1,11 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveGeneric#-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NumDecimals #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Kadenamint.ABCI where
 
@@ -25,6 +19,7 @@ import qualified Data.Aeson as Aeson
 import Data.Conduit.Network                             (serverSettings)
 import Data.Default                                     (Default(..))
 import Data.Functor                                     (void)
+import Data.Maybe                                       (fromMaybe)
 import Data.String                                      (IsString(..))
 import Data.Text                                        (Text)
 import qualified Data.Text as T
@@ -69,9 +64,7 @@ runABCI n = do
 
     (_protocol, rest) = cleave "://" (cfg ^. config_proxyApp)
     (host, port) = cleave ":" rest
-    port' = case T.readMaybe (T.unpack port) of
-      Nothing -> error "parsing error"
-      Just p -> p
+    port' = fromMaybe (error "parsing error") $ T.readMaybe (T.unpack port)
     host' = fromString $ T.unpack host
 
     transformHandler :: HandlerT (Response t) -> IO (Response t)
