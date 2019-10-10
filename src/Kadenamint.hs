@@ -404,7 +404,7 @@ type Err = Text
 type HandlerT = ReaderT Env (ExceptT Err IO)
 type HandlerEffects m = (MonadIO m, MonadError Err m, MonadReader Env m)
 
-app :: HandlerEffects m => PactEnv -> App m
+app :: HandlerEffects m => DB -> App m
 app pactDbEnv = App $ \case
   RequestEcho _ -> pure def
   RequestFlush _ -> pure def
@@ -418,7 +418,7 @@ app pactDbEnv = App $ \case
   RequestEndBlock _ -> pure def
   RequestCommit _ -> pure def
 
-initChain :: HandlerEffects m => PactEnv -> InitChain -> m (Response 'MTInitChain)
+initChain :: HandlerEffects m => DB -> InitChain -> m (Response 'MTInitChain)
 initChain pactDbEnv _ic = abortOnError $ do
   let eval = execYaml pactDbEnv
   void $ eval "pact/coin-contract/load-coin-contract.yaml"
@@ -433,7 +433,7 @@ initChain pactDbEnv _ic = abortOnError $ do
         log "Init chain failed" (Just err)
         error $ T.unpack err
 
-check :: HandlerEffects m => PactEnv -> HexString -> m (Response 'MTCheckTx)
+check :: HandlerEffects m => DB -> HexString -> m (Response 'MTCheckTx)
 check pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pactEnv True hx
   where
     accept = pure def
@@ -441,7 +441,7 @@ check pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pactE
     logParsed pt = log ("Checking command with hash: " <> tshow (Pact._cmdHash pt)) Nothing
     logEvaluated _ = pure ()
 
-deliver :: HandlerEffects m => PactEnv -> HexString -> m (Response 'MTDeliverTx)
+deliver :: HandlerEffects m => DB -> HexString -> m (Response 'MTDeliverTx)
 deliver pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pactEnv False hx
   where
     accept = pure def
@@ -455,7 +455,7 @@ runPactTransaction
   -> (Pact.EvalResult -> m ())
   -> m a
   -> m a
-  -> PactEnv
+  -> DB
   -> Bool
   -> HexString
   -> m a

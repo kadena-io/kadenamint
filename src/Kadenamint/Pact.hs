@@ -49,16 +49,16 @@ import Pact.Types.Persistence (ExecutionMode(..))
 import Pact.Types.Capability (Capability(..), CapScope(..), CapSlot(..), capStack)
 import Pact.Types.Runtime (EvalState, ModuleName(..), QualifiedName(..), evalCapabilities, permissiveNamespacePolicy)
 
-type PactEnv = PactDbEnv (DbEnv SQLite)
+newtype DB = DB { unDB :: PactDbEnv (DbEnv SQLite) }
 
-initDb :: MonadIO m => FilePath -> m (PactDbEnv (DbEnv SQLite))
+initDb :: MonadIO m => FilePath -> m DB
 initDb path = liftIO $ do
   pactDbEnv <- mkSQLiteEnv (newLogger alwaysLog "") True (SQLiteConfig path []) alwaysLog
   initSchema pactDbEnv
-  pure pactDbEnv
+  pure $ DB pactDbEnv
 
-execCmd :: MonadIO m => PactDbEnv (DbEnv SQLite) -> EvalState -> Bool -> Command Text -> m EvalResult
-execCmd pactDbEnv evalState shouldRollback cmd = liftIO $ do
+execCmd :: MonadIO m => DB -> EvalState -> Bool -> Command Text -> m EvalResult
+execCmd (DB pactDbEnv) evalState shouldRollback cmd = liftIO $ do
   let
     setupEvalEnv' execData = setupEvalEnv
       pactDbEnv
@@ -80,7 +80,7 @@ execCmd pactDbEnv evalState shouldRollback cmd = liftIO $ do
         Exec (ExecMsg code execData) -> evalExec signers evalState (setupEvalEnv' (Just execData)) code
         Continuation cont -> evalContinuation signers evalState (setupEvalEnv' Nothing) cont
 
-execYaml :: MonadIO m => PactDbEnv (DbEnv SQLite) -> FilePath -> m EvalResult
+execYaml :: MonadIO m => DB -> FilePath -> m EvalResult
 execYaml pactDbEnv fp = do
   (_, exec) <- liftIO $ mkApiReq fp
   execCmd pactDbEnv (initCapabilities [magic_COINBASE]) False exec
