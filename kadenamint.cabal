@@ -36,11 +36,16 @@ library
                , unordered-containers
                , which
                , yaml
+
   exposed-modules:
     Kadenamint
+    Kadenamint.ABCI
+    Kadenamint.Common
     Kadenamint.Pact
     Kadenamint.Tendermint
     Kadenamint.Tendermint.Config
+    Kadenamint.Tendermint.RPC
+
   ghc-options: -Wall
 
 executable kadenamint
