@@ -14,8 +14,7 @@ module Kadenamint.Tendermint
 import Control.Concurrent.Async                         (forConcurrently_, withAsync)
 import Control.Lens                                     (imap, makeLenses, (&), (^.), (.~))
 import Control.Monad.IO.Class                           (MonadIO(..))
-import Control.Monad.Reader                             (MonadReader(..), ReaderT(..), runReaderT)
-import Control.Monad.State.Strict                       (StateT(..), evalStateT)
+import Control.Monad.Reader                             (ReaderT(..), runReaderT)
 import Data.Bool                                        (bool)
 import Data.Functor                                     (void)
 import Data.Text                                        (Text)
@@ -219,7 +218,7 @@ updatePorts (NodePorts p2p rpc abci) cfg = cfg
 withNetwork
   :: (InitializedNode -> IO ())
   -> Int
-  -> (Text -> [InitializedNode] -> StateT Int IO ())
+  -> (Text -> [InitializedNode] -> IO ())
   -> IO ()
 withNetwork runABCI size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
   genesisNodes <- initNetwork root size
@@ -227,10 +226,5 @@ withNetwork runABCI size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
   flip runReaderT (coreEnv Nothing) $
     log ("Network of size " <> tshow size <> " has been setup at " <> root) Nothing
 
-  liftIO $ withAsync (runTimeline $ f root genesisNodes) $ \_ ->
+  liftIO $ withAsync (f root genesisNodes) $ \_ ->
     forConcurrently_ genesisNodes (runNode runABCI)
-
-type Timeline m = (MonadReader Env m, MonadIO m)
-
-runTimeline :: StateT Int IO a -> IO a
-runTimeline = flip evalStateT 0

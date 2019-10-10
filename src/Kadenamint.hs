@@ -13,7 +13,6 @@ module Kadenamint where
 import Control.Concurrent.Async                         (async, cancel)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (ReaderT(..), runReaderT)
-import Control.Monad.State.Strict                       (StateT)
 import qualified Data.Aeson as Aeson
 import Data.Functor                                     (void)
 import Data.Maybe                                       (fromMaybe)
@@ -61,7 +60,7 @@ runNode = Tendermint.runNode runABCI
 
 withNetwork
   :: Int
-  -> (Text -> [InitializedNode] -> StateT Int IO ())
+  -> (Text -> [InitializedNode] -> IO ())
   -> IO ()
 withNetwork = Tendermint.withNetwork runABCI
 
@@ -109,8 +108,6 @@ timelineRepl = withNetwork 2 $ \_ -> \case
     sleep 3 *> broadcastPact "(+ 1 2)" n0
     sleep 2 *> broadcastPact "(+ 1 2)" n1
   _ -> impossible
-
-type Nonce = Int
 
 broadcastPact :: MonadIO m => Text -> InitializedNode -> m ()
 broadcastPact = broadcastPactSigned Nothing
