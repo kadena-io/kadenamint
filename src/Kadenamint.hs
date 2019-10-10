@@ -438,7 +438,7 @@ check pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pactE
   where
     accept = pure def
     reject = pure $ ResponseCheckTx $ def & _checkTxCode .~ 1
-    logParsed pt = log ("Checking command with hash: " <> tshow (Pact._cmdHash pt)) Nothing
+    logParsed h = log ("Checking command with hash: " <> h) Nothing
     logEvaluated _ = pure ()
 
 deliver :: HandlerEffects m => DB -> HexString -> m (Response 'MTDeliverTx)
@@ -446,13 +446,13 @@ deliver pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pac
   where
     accept = pure def
     reject = pure $ ResponseDeliverTx $ def & _deliverTxCode .~ 1
-    logParsed pt = log ("Delivering command with hash: " <> tshow (Pact._cmdHash pt)) Nothing
-    logEvaluated r = log "Pact result" (Just $ T.strip $ tshow $ Pact.pretty $ Pact._erOutput r)
+    logParsed h = log ("Delivering command with hash: " <> h) Nothing
+    logEvaluated r = log "Pact result" (Just r)
 
 runPactTransaction
   :: HandlerEffects m
-  => (Pact.Command Text -> m ())
-  -> (Pact.EvalResult -> m ())
+  => (Text -> m ())
+  -> (Text -> m ())
   -> m a
   -> m a
   -> DB
@@ -462,9 +462,9 @@ runPactTransaction
 runPactTransaction logParsed logEvaluated accept reject pactDbEnv shouldRollback hx = rejectOnError $ do
   txt <- decode hx
   pt <- parse txt
-  lift $ logParsed pt
+  lift $ logParsed $ tshow $ Pact._cmdHash pt
   r <- eval pt
-  lift $ logEvaluated r
+  lift $ logEvaluated $ T.strip $ tshow $ Pact.pretty $ Pact._erOutput r
 
   where
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
