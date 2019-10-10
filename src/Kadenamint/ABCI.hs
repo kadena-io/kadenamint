@@ -33,7 +33,6 @@ import Prelude                                          hiding (head, log)
 import Data.ByteArray.HexString                         (HexString(..))
 import Network.ABCI.Server                              (serveAppWith)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
-import Network.ABCI.Server.Middleware.RequestLogger     (mkLogStdout)
 import Network.ABCI.Types.Messages.Request              (CheckTx(..), DeliverTx(..), InitChain(..))
 import Network.ABCI.Types.Messages.Response             (_checkTxCode, _deliverTxCode, _exceptionError)
 import qualified Pact.Interpreter as Pact
@@ -56,8 +55,6 @@ runABCI n = do
       home = n ^. initializedNode_home
 
   pactDbEnv <- initDb $ T.unpack home <> "/pact-db"
-
-  _logger <- mkLogStdout -- too noisy
 
   let
     env = abciEnv $ _config_moniker cfg

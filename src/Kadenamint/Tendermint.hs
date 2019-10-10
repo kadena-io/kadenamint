@@ -40,9 +40,6 @@ data InitializedNode = InitializedNode
   , _initializedNode_id          :: Text
   } deriving (Eq, Ord, Read, Show, Generic)
 
-type Address = Text
-type Peer = (Text, Address)
-
 newtype GlobalFlags = GlobalFlags
   { _globalFlags_home :: Text
   } deriving (Eq, Ord, Read, Show, Generic)
@@ -90,38 +87,23 @@ genesisFile n = configDir n </> ("genesis.json" :: Text)
 configDir :: InitializedNode -> Sh.FilePath
 configDir n = _initializedNode_home n </> ("config" :: Text)
 
-tendermint :: GlobalFlags -> Text -> [Text] -> Sh Text
-tendermint gf tmCmd cmdArgs = runCmd $ tendermintCmd gf tmCmd cmdArgs
-
-tendermintNetwork :: NetworkFlags -> Sh Text
-tendermintNetwork = runCmd . tendermintNetworkCmd
-
-tendermintNode :: GlobalFlags -> Sh Text
-tendermintNode = runCmd . tendermintNodeCmd
-
-runCmd :: (Sh.FilePath, [Text]) -> Sh Text
-runCmd = uncurry run
-
-plainCmd :: (Sh.FilePath, [Text]) -> Text
-plainCmd (cmd, args) = T.intercalate " " $ Sh.toTextIgnore cmd : fmap singleQuotes args
-
 tendermintPath :: Sh.FilePath
 tendermintPath = Sh.fromText $ T.pack $(staticWhich "tendermint")
 
-tendermintCmd :: GlobalFlags -> Text -> [Text] -> (Sh.FilePath, [Text])
-tendermintCmd gf tmCmd cmdArgs = (tendermintPath,) $ tmArgs <> [tmCmd] <> cmdArgs
+tendermint :: GlobalFlags -> Text -> [Text] -> Sh Text
+tendermint gf tmCmd cmdArgs = run tendermintPath $ tmArgs <> [tmCmd] <> cmdArgs
   where
     tmArgs = ["--home", _globalFlags_home gf]
 
-tendermintNetworkCmd :: NetworkFlags -> (Sh.FilePath, [Text])
-tendermintNetworkCmd nf = (tendermintPath,) $ ("testnet" :) $
+tendermintNetwork :: NetworkFlags -> Sh Text
+tendermintNetwork nf = run tendermintPath $ ("testnet" :) $
   [ "--v", tshow $ _networkFlags_validators nf
   , "--o", _networkFlags_output nf
   , "--starting-ip-address", localhost
   ] <> bool [] ["--populate-persistent-peers"] (_networkFlags_populatePeers nf)
 
-tendermintNodeCmd :: GlobalFlags -> (Sh.FilePath, [Text])
-tendermintNodeCmd gf = tendermintCmd gf "node" []
+tendermintNode :: GlobalFlags -> Sh Text
+tendermintNode gf = tendermint gf "node" []
 
 coreEnv :: Maybe Text -> Env
 coreEnv moniker = Env
