@@ -6,9 +6,9 @@ let
   rp = (import ./dep/pact {}).rp;
 
   recentNixpkgs = import (builtins.fetchTarball {
-    name = "nixos-master-2019-08-09";
-    url = https://github.com/nixos/nixpkgs/archive/c2cc6aa6703be230d5590690735c0581de6c0216.tar.gz;
-    sha256 = "1cxw3sg1bcaw40hsj634hfkq1szfr67gyxz44r680js9l6vvvwck";
+    name = "nixpkgs-pull-68945";
+    url = https://github.com/nixos/nixpkgs/archive/7591343bf3bffdd139fce8a6b0f1c8e6c58ab6af.tar.gz;
+    sha256 = "108qx0zja9cswq9kmh4vkwacppnw89rh6ibwf56kqfw8fqcwak0g";
   }) {};
 
   tendermint = recentNixpkgs.tendermint;
