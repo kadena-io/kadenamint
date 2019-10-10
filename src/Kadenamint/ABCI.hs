@@ -30,7 +30,7 @@ import Text.Read as T                                   (readMaybe)
 
 import Prelude                                          hiding (head, log)
 
-import Data.ByteArray.HexString                         (HexString(..))
+import Data.ByteArray.Base64String                      (Base64String(..))
 import Network.ABCI.Server                              (serveAppWith)
 import Network.ABCI.Server.App                          (App(..), Request(..), Response(..), MessageType(..), transformApp)
 import Network.ABCI.Types.Messages.Request              (CheckTx(..), DeliverTx(..), InitChain(..))
@@ -109,7 +109,7 @@ initChain pactDbEnv _ic = abortOnError $ do
         log "Init chain failed" (Just err)
         error $ T.unpack err
 
-check :: HandlerEffects m => DB -> HexString -> m (Response 'MTCheckTx)
+check :: HandlerEffects m => DB -> Base64String -> m (Response 'MTCheckTx)
 check pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pactEnv True hx
   where
     accept = pure def
@@ -117,7 +117,7 @@ check pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pactE
     logParsed h = log ("Checking command with hash: " <> h) Nothing
     logEvaluated _ = pure ()
 
-deliver :: HandlerEffects m => DB -> HexString -> m (Response 'MTDeliverTx)
+deliver :: HandlerEffects m => DB -> Base64String -> m (Response 'MTDeliverTx)
 deliver pactEnv hx = runPactTransaction logParsed logEvaluated accept reject pactEnv False hx
   where
     accept = pure def
@@ -133,7 +133,7 @@ runPactTransaction
   -> m a
   -> DB
   -> Bool
-  -> HexString
+  -> Base64String
   -> m a
 runPactTransaction logParsed logEvaluated accept reject pactDbEnv shouldRollback hx = rejectOnError $ do
   txt <- decode hx
@@ -144,7 +144,7 @@ runPactTransaction logParsed logEvaluated accept reject pactDbEnv shouldRollback
 
   where
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
-      . liftEither . decodeHexString
+      . liftEither . decodeBase64String
 
     eval = execCmd pactDbEnv def shouldRollback
 
@@ -158,5 +158,5 @@ runPactTransaction logParsed logEvaluated accept reject pactDbEnv shouldRollback
       Left (h,b) -> log ("Rejecting transaction - " <> h) b *> reject
       Right () -> accept
 
-decodeHexString :: HexString -> Either T.UnicodeException Text
-decodeHexString (HexString bs) = T.decodeUtf8' bs & _TODO_ "make sure this is the right decoding"
+decodeBase64String :: Base64String -> Either T.UnicodeException Text
+decodeBase64String (Base64String bs) = T.decodeUtf8' bs & _TODO_ "make sure this is the right decoding"
