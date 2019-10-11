@@ -21,22 +21,22 @@ $TMUX split-window -h -p 50
 
 $TMUX select-pane -t 0
 $TMUX send-keys './internal/repl' ENTER
-$TMUX send-keys ENTER 'runNodeDir "test/node0"'
+$TMUX send-keys ENTER 'runKadenamintNodeDir "test/node0"'
 sleep 1
 
 $TMUX select-pane -t 1
 $TMUX send-keys './internal/repl' ENTER
-$TMUX send-keys ENTER 'runNodeDir "test/node1"'
+$TMUX send-keys ENTER 'runKadenamintNodeDir "test/node1"'
 sleep 1
 
 $TMUX select-pane -t 2
 $TMUX send-keys './internal/repl' ENTER
-$TMUX send-keys ENTER 'runNodeDir "test/node2"'
+$TMUX send-keys ENTER 'runKadenamintNodeDir "test/node2"'
 sleep 1
 
 $TMUX select-pane -t 3
 $TMUX send-keys './internal/repl' ENTER
-$TMUX send-keys ENTER 'loadNode "test/node0" >>= addNode "test/nodeX" "nodeX" extraNodePorts >>= runNode'
+$TMUX send-keys ENTER 'loadNode "test/node0" >>= addNode "test/nodeX" "nodeX" extraNodePorts >>= runKadenamintNode'
 sleep 1
 
 $TMUX select-pane -t 4

@@ -26,8 +26,7 @@ import Prelude                                          hiding (head, log)
 import Kadenamint.ABCI as ABCI
 import Kadenamint.Common
 import Kadenamint.Pact
-import Kadenamint.Tendermint hiding (runNode, withNetwork)
-import qualified Kadenamint.Tendermint as Tendermint
+import Kadenamint.Tendermint
 import Kadenamint.Tendermint.RPC
 
 broadcastEnv :: Env
@@ -55,14 +54,17 @@ transfer from to amount = T.intercalate " "
 runEverything :: IO ()
 runEverything = timelineCoinContract
 
-runNode :: InitializedNode -> IO ()
-runNode = Tendermint.runNode runABCI
+runKadenamintNodeDir :: MonadIO m => Text -> m ()
+runKadenamintNodeDir = runNodeDir runABCI
 
-withNetwork
+runKadenamintNode :: InitializedNode -> IO ()
+runKadenamintNode = runNode runABCI
+
+withKadenamintNetwork
   :: Int
   -> (Text -> [InitializedNode] -> IO ())
   -> IO ()
-withNetwork = Tendermint.withNetwork runABCI
+withKadenamintNetwork = withNetwork runABCI
 
 showBalancesTx :: MonadIO m => InitializedNode -> m ()
 showBalancesTx = broadcastPact showBalances
@@ -74,14 +76,14 @@ transferTx :: MonadIO m => Text -> Text -> Double -> InitializedNode -> m ()
 transferTx from to amount = broadcastPactSigned (Just from) (transfer from to amount <> showBalances)
 
 timelineCoinContract :: IO ()
-timelineCoinContract = withNetwork 2 $ \root -> \case
+timelineCoinContract = withKadenamintNetwork 2 $ \root -> \case
   [n0, n1] -> do
     sleep 2
     showBalancesTx n1
 
     sleep 2
     n3 <- addNode (root <> "/nodeX") "nodeX" extraNodePorts n0
-    a3 <- liftIO $ async $ runNode n3
+    a3 <- liftIO $ async $ runKadenamintNode n3
 
     sleep 2
     showBalancesTx n3
@@ -97,13 +99,13 @@ timelineCoinContract = withNetwork 2 $ \root -> \case
     transferTx "sender00" "sender02" 1 n0
 
     sleep 2
-    void $ liftIO $ async $ runNode n3
+    void $ liftIO $ async $ runKadenamintNode n3
 
 
   _ -> impossible
 
 timelineRepl :: IO ()
-timelineRepl = withNetwork 2 $ \_ -> \case
+timelineRepl = withKadenamintNetwork 2 $ \_ -> \case
   [n0, n1] -> do
     sleep 3 *> broadcastPact "(+ 1 2)" n0
     sleep 2 *> broadcastPact "(+ 1 2)" n1
