@@ -1,2 +1,2 @@
 DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
-cd $DIR && nix-shell default.nix -A shells.ghc --run "ghcid -c 'cabal new-repl all' -T runEverything"
+cd $DIR && nix-shell default.nix -A shells.ghc --run "./internal/clean && ghcid -c 'cabal new-repl all' -T runEverything"

@@ -1,0 +1,2 @@
+# Shouldn't actually be needed - either a bug in cabal or an incorrect assumption in nix-cabal interaction
+cabal v2-clean
