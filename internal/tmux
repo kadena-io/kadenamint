@@ -6,6 +6,8 @@ $TMUX kill-session -t $SESSION
 $TMUX new -d -s $SESSION
 $TMUX detach
 
+$TMUX set -g mouse on
+
 # 0 1
 # 2 3
 #  4
