@@ -5,29 +5,27 @@
 let
   rp = (import ./dep/pact {}).rp;
 
-  recentNixpkgs = import (builtins.fetchTarball {
-    name = "nixpkgs-pull-68945";
-    url = https://github.com/nixos/nixpkgs/archive/7591343bf3bffdd139fce8a6b0f1c8e6c58ab6af.tar.gz;
-    sha256 = "108qx0zja9cswq9kmh4vkwacppnw89rh6ibwf56kqfw8fqcwak0g";
-  }) {};
-
-  tendermint = recentNixpkgs.tendermint;
-
-  purifyEnvironment =
-    let isImpure = p: recentNixpkgs.lib.hasPrefix ".ghc.environment" p
-                      || builtins.elem p [".git" "result" "dist-newstyle"];
-    in builtins.filterSource (path: type: !isImpure (baseNameOf path));
-
 in rp.project ({ pkgs, hackGet, ... }:
   let
     hs-abci = hackGet ./dep/hs-abci;
     pact = hackGet ./dep/pact;
     which = hackGet ./dep/which;
+    tendermint = pkgs.callPackage ./dep/tendermint.nix {};
+
+    purifyEnvironment =
+      let isImpure = p: pkgs.lib.strings.hasPrefix ".ghc.environment" p
+                        || builtins.elem p [".git" "result" "dist-newstyle"];
+      in builtins.filterSource (path: type: !isImpure (baseNameOf path));
 
   in {
     inherit withHoogle;
 
-    passthru = { nixpkgs = recentNixpkgs; };
+    passthru = {
+      inherit tendermint;
+      inherit (pkgs) tmux;
+      nixpkgs = pkgs;
+      overrideDerivation = pkgs.lib.overrideDerivation;
+    };
 
     packages = {
       inherit pact which;
