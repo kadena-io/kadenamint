@@ -52,7 +52,9 @@ transfer from to amount = T.intercalate " "
   ]
 
 runEverything :: IO ()
-runEverything = timelineCoinContract
+runEverything = do
+  initProcess
+  timelineCoinContract
 
 runKadenamintNodeDir :: MonadIO m => Text -> m ()
 runKadenamintNodeDir = runNodeDir runABCI

@@ -11,6 +11,7 @@ import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.String                                      (IsString(..))
 import Data.Text                                        (Text)
 import System.Console.ANSI                              (SGR(..), setSGRCode)
+import System.IO                                        (BufferMode (..), hSetBuffering, stderr, stdout)
 import qualified Data.Text as T
 
 localhost :: Text
@@ -25,6 +26,11 @@ red, green, cyan :: Colour Float
 red   = sRGB24 0xFF 0 0
 green = sRGB24 0 0xFF 0
 cyan  = sRGB24 0 0xFF 0xFF
+
+initProcess :: IO ()
+initProcess = do
+  hSetBuffering stdout LineBuffering
+  hSetBuffering stderr LineBuffering
 
 log :: (MonadIO m, MonadReader Env m) => Text -> Maybe Text -> m ()
 log header body = do
