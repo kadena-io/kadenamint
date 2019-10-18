@@ -9,7 +9,7 @@ The announcement blogpost can be found [here](https://medium.com/kadena-io/intro
 For more questions, you can join Kadena's [discord](https://discordapp.com/invite/bsUcWmX).
 
 # Contracts
-On the Genesis block, Kadenamint loads Pact's [coin contract](./pact/coin-contract/coin.pact), sets up some [initial accounts](pact/coin-contract/grants.yaml) with funds, and their [keys](pact/coin-contract/keys.yaml) for demonstration purposes. You can then broadcast transaction with Pact code to manipulate these accounts (e.g. transfer funds).
+On the Genesis block, Kadenamint loads Pact's [coin contract](./pact/coin-contract/coin.pact), sets up some [initial accounts](pact/coin-contract/grants.yaml) with funds, and their [keys](pact/coin-contract/keys.yaml) for demonstration purposes. You can then broadcast transactions with Pact code to manipulate these accounts (e.g. transfer funds).
 
 # Hacking
 
