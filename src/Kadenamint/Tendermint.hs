@@ -152,6 +152,7 @@ runNodeDir runABCI dir = loadNode dir >>= runNode runABCI
 
 runNode :: MonadIO m => (InitializedNode -> IO ()) -> InitializedNode -> m ()
 runNode runABCI n = void $ do
+  initProcess
   liftIO $ withAsync (runABCI n) $ \_ ->
     flip runReaderT (coreEnv $ Just $ _config_moniker $ _initializedNode_config n) $ do
       log "Launching" Nothing

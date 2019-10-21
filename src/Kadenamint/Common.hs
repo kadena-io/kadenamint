@@ -27,8 +27,8 @@ red   = sRGB24 0xFF 0 0
 green = sRGB24 0 0xFF 0
 cyan  = sRGB24 0 0xFF 0xFF
 
-initProcess :: IO ()
-initProcess = do
+initProcess :: MonadIO m => m ()
+initProcess = liftIO $ do
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
 
