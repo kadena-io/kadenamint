@@ -32,8 +32,8 @@ import qualified Data.Text.Encoding as T
 import qualified Data.Yaml as Y
 
 import Pact.ApiReq (ApiKeyPair(..), mkApiReq, mkExec, mkKeyPairs)
-import Pact.Interpreter (EvalResult(..), MsgData(..), PactDbEnv, evalContinuation, evalExec
-                        , initRefStore, initSchema, mkSQLiteEnv, setupEvalEnv)
+import Pact.Interpreter (EvalResult(..), MsgData(..), PactDbEnv, defaultInterpreterState
+                        , evalContinuation, evalExec, initRefStore, initSchema, mkSQLiteEnv, setupEvalEnv)
 import Pact.Gas (freeGasEnv)
 import Pact.PersistPactDb (DbEnv)
 import Pact.Persist.SQLite (SQLite, SQLiteConfig(..))
@@ -56,8 +56,8 @@ initDb path = liftIO $ do
   initSchema pactDbEnv
   pure $ DB pactDbEnv
 
-execCmd :: MonadIO m => DB -> EvalState -> Bool -> Command Text -> m EvalResult
-execCmd (DB pactDbEnv) evalState shouldRollback cmd = liftIO $ do
+execCmd :: MonadIO m => DB -> (EvalState -> EvalState) -> Bool -> Command Text -> m EvalResult
+execCmd (DB pactDbEnv) stateF shouldRollback cmd = liftIO $ do
   let
     setupEvalEnv' execData = setupEvalEnv
       pactDbEnv
@@ -75,9 +75,10 @@ execCmd (DB pactDbEnv) evalState shouldRollback cmd = liftIO $ do
     ProcSucc (c :: Command (Payload PublicMeta ParsedCode)) -> do
       let p = c ^. cmdPayload
           signers = p ^. pSigners
+          interpreter = defaultInterpreterState stateF
       case p ^. pPayload of
-        Exec (ExecMsg code execData) -> evalExec signers evalState (setupEvalEnv' (Just execData)) code
-        Continuation cont -> evalContinuation signers evalState (setupEvalEnv' Nothing) cont
+        Exec (ExecMsg code execData) -> evalExec signers interpreter (setupEvalEnv' (Just execData)) code
+        Continuation cont -> evalContinuation signers interpreter (setupEvalEnv' Nothing) cont
 
 execYaml :: MonadIO m => DB -> FilePath -> m EvalResult
 execYaml pactDbEnv fp = do
@@ -109,8 +110,8 @@ stockKey s = do
 stockKeyFile :: ByteString
 stockKeyFile = $(embedFile "pact/coin-contract/keys.yaml")
 
-initCapabilities :: [CapSlot Capability] -> EvalState
-initCapabilities cs = set (evalCapabilities . capStack) cs def
+initCapabilities :: [CapSlot Capability] -> EvalState -> EvalState
+initCapabilities cs = set (evalCapabilities . capStack) cs
 
 magic_COINBASE :: CapSlot Capability
 magic_COINBASE = mkMagicCapSlot "COINBASE"
