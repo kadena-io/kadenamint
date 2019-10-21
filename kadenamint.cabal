@@ -23,6 +23,7 @@ library
                , hs-abci-server
                , hs-abci-types
                , hs-abci-extra
+               , hs-tendermint-client
                , http-types
                , lens
                , memory

@@ -20,6 +20,7 @@ import Data.String.Here.Uninterpolated                  (here)
 import Data.Text                                        (Text)
 import qualified Data.Text as T
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..))
+import qualified Text.Read as T
 
 import Prelude                                          hiding (head, log)
 
@@ -121,10 +122,12 @@ broadcastPactSigned sender code n = do
   let
     cfg = _initializedNode_config n
     rpc' = _configRPC_laddr $ _config_rpc cfg
-    rpc = fromMaybe rpc' $ T.stripPrefix "tcp://" rpc'
+    addr = fromMaybe rpc' $ T.stripPrefix "tcp://" rpc'
+    (host, port) = cleave ":" addr
+    port' = fromMaybe (error "parsing error") $ T.readMaybe $ T.unpack port
 
   cmd <- mkExec' code sender
 
   flip runReaderT broadcastEnv $ do
-    log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> rpc) (Just $ tshow code)
-    broadcastTransaction rpc $ tshow $ Aeson.toJSON cmd
+    log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> port) (Just $ tshow code)
+    broadcastTransaction host port' $ tshow $ Aeson.toJSON cmd
