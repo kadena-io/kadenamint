@@ -1,15 +1,19 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NumDecimals #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Kadenamint.Common where
 
 import Control.Concurrent                               (threadDelay)
+import Control.Exception                                (IOException, bracket, catch)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), asks)
 import Data.Colour.SRGB                                 (Colour, sRGB24)
 import Data.String                                      (IsString(..))
 import Data.Text                                        (Text)
+import Network.Socket                                   (PortNumber, addrAddress, addrFamily, addrProtocol, addrSocketType
+                                                        , bind, close, defaultHints, getAddrInfo, socket, withSocketsDo)
 import System.Console.ANSI                              (SGR(..), setSGRCode)
 import System.IO                                        (BufferMode (..), hSetBuffering, stderr, stdout)
 import qualified Data.Text as T
@@ -31,6 +35,16 @@ initProcess :: MonadIO m => m ()
 initProcess = liftIO $ do
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
+
+portIsFree :: MonadIO m => PortNumber -> m Bool
+portIsFree p = liftIO $ withSocketsDo $ do
+  addr:_ <- getAddrInfo (Just defaultHints) (Just "127.0.0.1") (Just $ show p)
+  bracket (open addr) close (\_ -> pure True) `catch` (\(_ :: IOException) -> pure False)
+  where
+    open addr = do
+      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
+      bind sock (addrAddress addr)
+      return sock
 
 log :: (MonadIO m, MonadReader Env m) => Text -> Maybe Text -> m ()
 log header body = do

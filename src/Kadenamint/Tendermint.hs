@@ -1,6 +1,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
@@ -13,15 +14,19 @@ module Kadenamint.Tendermint
 
 import Control.Concurrent.Async                         (forConcurrently_, withAsync)
 import Control.Lens                                     (imap, makeLenses, (&), (^.), (.~))
+import Control.Monad                                    ((>=>))
 import Control.Monad.IO.Class                           (MonadIO(..))
+import Control.Monad.Except                             (MonadError, runExceptT, throwError)
 import Control.Monad.Reader                             (ReaderT(..), runReaderT)
 import Data.Bool                                        (bool)
 import Data.Functor                                     (void)
+import Data.Maybe                                       (fromMaybe)
 import Data.Text                                        (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Traversable                                 (for)
 import GHC.Generics
+import Network.URI                                      (parseURI, uriAuthority, uriPort)
 import Shelly                                           (Sh, cp, shelly, silently, run, toTextIgnore, withTmpDir, (</>))
 import qualified Shelly as Sh
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..))
@@ -150,13 +155,46 @@ addNode home moniker ports preExistingNode = shelly $ do
 runNodeDir :: MonadIO m => (InitializedNode -> IO ()) -> Text -> m ()
 runNodeDir runABCI dir = loadNode dir >>= runNode runABCI
 
+portFromAddrIsFree :: MonadIO m => Text -> m (Maybe (Integer, Bool))
+portFromAddrIsFree uri = do
+  let
+    stripComma = fromMaybe <*> T.stripPrefix ":"
+    stripComma' = T.unpack . stripComma . T.pack
+    port = fmap uriPort . uriAuthority =<< parseURI (T.unpack uri)
+
+  for (T.readMaybe . stripComma' =<< port) $ \p ->
+    (p,) <$> portIsFree (fromInteger p)
+
+ensureAddrAvailable :: (MonadIO m, MonadError Text m) => Text -> m ()
+ensureAddrAvailable uri = do
+  portInfo <- portFromAddrIsFree uri
+  case portInfo of
+    Nothing -> throwError $ "FATAL: ADDRESS IS INVALID: " <> uri
+    Just (p, isFree) ->
+      if isFree
+      then pure ()
+      else throwError $ "FATAL: PORT IS TAKEN: " <> tshow p
+
 runNode :: MonadIO m => (InitializedNode -> IO ()) -> InitializedNode -> m ()
-runNode runABCI n = void $ do
+runNode runABCI n = void $ logErrors $ do
   initProcess
-  liftIO $ withAsync (runABCI n) $ \_ ->
-    flip runReaderT (coreEnv $ Just $ _config_moniker $ _initializedNode_config n) $ do
-      log "Launching" Nothing
-      shelly $ tendermintNode $ GlobalFlags $ _initializedNode_home n
+  let
+    cfg = _initializedNode_config n
+
+  ensureAddrAvailable $ _config_proxyApp cfg
+  ensureAddrAvailable $ _configP2P_laddr $ _config_p2p cfg
+  ensureAddrAvailable $ _configRPC_laddr $ _config_rpc cfg
+
+  liftIO $ withAsync (runABCI n) $ \_ -> do
+    log' "Launching" Nothing
+    void $ shelly $ tendermintNode $ GlobalFlags $ _initializedNode_home n
+
+  where
+    log' a b = flip runReaderT (coreEnv $ Just $ _config_moniker $ _initializedNode_config n) $ log a b
+
+    logErrors = runExceptT >=> \case
+      Left err -> log' err Nothing
+      Right () -> pure ()
 
 initNetwork :: MonadIO m => Text -> Int -> m [InitializedNode]
 initNetwork root size = shelly $ do

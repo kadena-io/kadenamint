@@ -28,6 +28,8 @@ library
                , lens
                , memory
                , mtl
+               , network
+               , network-uri
                , pact
                , shelly
                , text
