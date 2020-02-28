@@ -2,20 +2,14 @@
 , withHoogle ? false
 }:
 
-let
-  rp = (import ./dep/pact {}).rp;
+let kp = import ../kpkgs {};
 
-in rp.project ({ pkgs, hackGet, ... }:
+in kp.rp.project ({ pkgs, hackGet, ... }:
   let
     hs-abci = hackGet ./dep/hs-abci;
     pact = hackGet ./dep/pact;
     which = hackGet ./dep/which;
     tendermint = pkgs.callPackage ./dep/tendermint.nix {};
-
-    purifyEnvironment =
-      let isImpure = p: pkgs.lib.strings.hasPrefix ".ghc.environment" p
-                        || builtins.elem p [".git" "result" "dist-newstyle"];
-      in builtins.filterSource (path: type: !isImpure (baseNameOf path));
 
   in {
     inherit withHoogle;
@@ -29,7 +23,7 @@ in rp.project ({ pkgs, hackGet, ... }:
 
     packages = {
       inherit pact which;
-      kadenamint = purifyEnvironment ./.;
+      kadenamint = kp.gitignoreSource ./.;
     };
 
     shells = {
@@ -38,18 +32,17 @@ in rp.project ({ pkgs, hackGet, ... }:
 
     overrides = with pkgs.haskell.lib; pkgs.lib.foldr pkgs.lib.composeExtensions  (_: _: {}) [
       (import hs-abci {}).overrides
-      (import (pact + /overrides.nix) pkgs)
       (self: super: {
         kadenamint = overrideCabal super.kadenamint (drv: {
           buildTools = (drv.buildTools or []) ++ [ pkgs.buildPackages.makeWrapper ];
-          executableSystemDepends = (drv.executableSystemDepends or []) ++ [ tendermint pkgs.z3];
+          executableSystemDepends = (drv.executableSystemDepends or []) ++ [tendermint pkgs.z3];
           postFixup = ''
             ${drv.postFixup or ""}
             wrapProgram "$out"/bin/kadenamint --set SBV_Z3 ${pkgs.z3}/bin/z3
           '';
         });
 
-        pact = dontCoverage super.pact;
+        pact = dontCoverage (addBuildDepend super.pact pkgs.z3);
 
         tomland = dontCheck (self.callHackageDirect {
           pkg = "tomland";

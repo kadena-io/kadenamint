@@ -7,3 +7,4 @@ result-exe
 ghcid-output.txt
 
 .tendermint
+.ghc.environment.*
