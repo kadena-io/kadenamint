@@ -58,24 +58,25 @@ initDb path = liftIO $ do
 
 execCmd :: MonadIO m => DB -> (EvalState -> EvalState) -> Bool -> Command Text -> m EvalResult
 execCmd (DB pactDbEnv) stateF shouldRollback cmd = liftIO $ do
-  let
-    setupEvalEnv' execData = setupEvalEnv
-      pactDbEnv
-      Nothing
-      (bool Transactional Local shouldRollback)
-      (MsgData (fromMaybe Aeson.Null execData) Nothing (Hash ""))
-      initRefStore
-      freeGasEnv
-      permissiveNamespacePolicy
-      noSPVSupport
-      def
-
   case verifyCommand $ fmap T.encodeUtf8 cmd of
     f@ProcFail{} -> error (show f)
     ProcSucc (c :: Command (Payload PublicMeta ParsedCode)) -> do
-      let p = c ^. cmdPayload
-          signers = p ^. pSigners
-          interpreter = defaultInterpreterState stateF
+      let
+        p = c ^. cmdPayload
+        signers = p ^. pSigners
+        interpreter = defaultInterpreterState stateF
+
+        setupEvalEnv' execData = setupEvalEnv
+          pactDbEnv
+          Nothing
+          (bool Transactional Local shouldRollback)
+          (MsgData (fromMaybe Aeson.Null execData) Nothing (Hash ""))
+          initRefStore
+          freeGasEnv
+          permissiveNamespacePolicy
+          noSPVSupport
+          def
+
       case p ^. pPayload of
         Exec (ExecMsg code execData) -> evalExec signers interpreter (setupEvalEnv' (Just execData)) code
         Continuation cont -> evalContinuation signers interpreter (setupEvalEnv' Nothing) cont
