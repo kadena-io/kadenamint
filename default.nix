@@ -1,6 +1,6 @@
 { system ? builtins.currentSystem
 , withHoogle ? false
-, kpkgs ? import ../kpkgs {}
+, kpkgs ? import ./dep/kpkgs {}
 }:
 
 kpkgs.rp.project ({ pkgs, hackGet, ... }:
