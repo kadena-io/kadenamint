@@ -1,34 +1,14 @@
 { system ? builtins.currentSystem
 , withHoogle ? false
+, kpkgs ? import ../kpkgs {}
 }:
 
-let kp = import ../kpkgs {};
-
-in kp.rp.project ({ pkgs, hackGet, ... }:
+kpkgs.rp.project ({ pkgs, hackGet, ... }:
   let
     hs-abci = hackGet ./dep/hs-abci;
     pact = hackGet ./dep/pact;
     which = hackGet ./dep/which;
     tendermint = pkgs.callPackage ./dep/tendermint.nix {};
-
-  in {
-    inherit withHoogle;
-
-    passthru = {
-      inherit tendermint;
-      inherit (pkgs) tmux;
-      nixpkgs = pkgs;
-      overrideDerivation = pkgs.lib.overrideDerivation;
-    };
-
-    packages = {
-      inherit pact which;
-      kadenamint = kp.gitignoreSource ./.;
-    };
-
-    shells = {
-      ghc = ["kadenamint"];
-    };
 
     overrides = with pkgs.haskell.lib; pkgs.lib.foldr pkgs.lib.composeExtensions  (_: _: {}) [
       (import hs-abci {}).overrides
@@ -51,5 +31,24 @@ in kp.rp.project ({ pkgs, hackGet, ... }:
         } {});
       })
     ];
+
+  in {
+    inherit overrides withHoogle;
+
+    passthru = {
+      inherit overrides tendermint;
+      inherit (pkgs) tmux;
+      nixpkgs = pkgs;
+      overrideDerivation = pkgs.lib.overrideDerivation;
+    };
+
+    packages = {
+      inherit pact which;
+      kadenamint = kpkgs.gitignoreSource ./.;
+    };
+
+    shells = {
+      ghc = ["kadenamint"];
+    };
   }
 )
