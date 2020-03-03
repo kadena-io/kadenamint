@@ -37,6 +37,7 @@ import Pact.Interpreter (EvalResult(..), MsgData(..), PactDbEnv, defaultInterpre
 import Pact.Gas (freeGasEnv)
 import Pact.PersistPactDb (DbEnv)
 import Pact.Persist.SQLite (SQLite, SQLiteConfig(..))
+import Pact.Types.Capability (SigCapability(..))
 import Pact.Types.Command (Command(..), ParsedCode(..), Payload(..), ProcessedCommand(..), cmdPayload, pPayload, pSigners, verifyCommand)
 import Pact.Types.ChainMeta (PublicMeta, pmSender)
 import Pact.Types.Crypto (PPKScheme(..), PrivateKeyBS(..), PublicKeyBS(..))
@@ -45,7 +46,7 @@ import Pact.Types.RPC (PactRPC(..), ExecMsg(..))
 import Pact.Types.SPV (noSPVSupport)
 import Pact.Types.Hash (Hash(..))
 import Pact.Types.Persistence (ExecutionMode(..))
-import Pact.Types.Capability (Capability(..), CapScope(..), CapSlot(..), capStack)
+import Pact.Types.Capability (CapScope(..), CapSlot(..), capStack)
 import Pact.Types.Runtime (EvalState, ModuleName(..), QualifiedName(..), evalCapabilities, permissiveNamespacePolicy)
 
 newtype DB = DB { unDB :: PactDbEnv (DbEnv SQLite) }
@@ -58,27 +59,29 @@ initDb path = liftIO $ do
 
 execCmd :: MonadIO m => DB -> (EvalState -> EvalState) -> Bool -> Command Text -> m EvalResult
 execCmd (DB pactDbEnv) stateF shouldRollback cmd = liftIO $ do
-  let
-    setupEvalEnv' execData = setupEvalEnv
-      pactDbEnv
-      Nothing
-      (bool Transactional Local shouldRollback)
-      (MsgData (fromMaybe Aeson.Null execData) Nothing (Hash ""))
-      initRefStore
-      freeGasEnv
-      permissiveNamespacePolicy
-      noSPVSupport
-      def
-
   case verifyCommand $ fmap T.encodeUtf8 cmd of
     f@ProcFail{} -> error (show f)
     ProcSucc (c :: Command (Payload PublicMeta ParsedCode)) -> do
-      let p = c ^. cmdPayload
-          signers = p ^. pSigners
-          interpreter = defaultInterpreterState stateF
+      let
+        p = c ^. cmdPayload
+        signers = p ^. pSigners
+        interpreter = defaultInterpreterState stateF
+
+        setupEvalEnv' execData = setupEvalEnv
+          pactDbEnv
+          Nothing
+          (bool Transactional Local shouldRollback)
+          (MsgData (fromMaybe Aeson.Null execData) Nothing (Hash "") signers)
+          initRefStore
+          freeGasEnv
+          permissiveNamespacePolicy
+          noSPVSupport
+          def
+          def
+
       case p ^. pPayload of
-        Exec (ExecMsg code execData) -> evalExec signers interpreter (setupEvalEnv' (Just execData)) code
-        Continuation cont -> evalContinuation signers interpreter (setupEvalEnv' Nothing) cont
+        Exec (ExecMsg code execData) -> evalExec interpreter (setupEvalEnv' (Just execData)) code
+        Continuation cont -> evalContinuation interpreter (setupEvalEnv' Nothing) cont
 
 execYaml :: MonadIO m => DB -> FilePath -> m EvalResult
 execYaml pactDbEnv fp = do
@@ -110,15 +113,15 @@ stockKey s = do
 stockKeyFile :: ByteString
 stockKeyFile = $(embedFile "pact/coin-contract/keys.yaml")
 
-initCapabilities :: [CapSlot Capability] -> EvalState -> EvalState
+initCapabilities :: [CapSlot SigCapability] -> EvalState -> EvalState
 initCapabilities cs = set (evalCapabilities . capStack) cs
 
-magic_COINBASE :: CapSlot Capability
+magic_COINBASE :: CapSlot SigCapability
 magic_COINBASE = mkMagicCapSlot "COINBASE"
 
-mkMagicCapSlot :: Text -> CapSlot Capability
+mkMagicCapSlot :: Text -> CapSlot SigCapability
 mkMagicCapSlot c = CapSlot CapCallStack cap []
   where
     mn = ModuleName "coin" Nothing
     fqn = QualifiedName mn c def
-    cap = UserCapability fqn []
+    cap = SigCapability fqn []
