@@ -148,12 +148,13 @@ addNode home moniker ports preExistingNode = shelly $ do
     initializedNode_config .~ newCfg
 
 runNodeDir :: MonadIO m => (InitializedNode -> IO ()) -> Text -> m ()
-runNodeDir runABCI dir = loadNode dir >>= runNode runABCI
+runNodeDir withNode dir = loadNode dir >>= runNode withNode
 
 runNode :: MonadIO m => (InitializedNode -> IO ()) -> InitializedNode -> m ()
-runNode runABCI n = void $ do
+runNode withNode n = void $ do
   initProcess
-  liftIO $ withAsync (runABCI n) $ \_ ->
+
+  liftIO $ withAsync (withNode n) $ \_ ->
     flip runReaderT (coreEnv $ Just $ _config_moniker $ _initializedNode_config n) $ do
       log "Launching" Nothing
       shelly $ tendermintNode $ GlobalFlags $ _initializedNode_home n
@@ -203,11 +204,11 @@ withNetwork
   -> Int
   -> (Text -> [InitializedNode] -> IO ())
   -> IO ()
-withNetwork runABCI size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
+withNetwork withNode size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
   genesisNodes <- initNetwork root size
 
   flip runReaderT (coreEnv Nothing) $
     log ("Network of size " <> tshow size <> " has been setup at " <> root) Nothing
 
   liftIO $ withAsync (f root genesisNodes) $ \_ ->
-    forConcurrently_ genesisNodes (runNode runABCI)
+    forConcurrently_ genesisNodes (runNode withNode)

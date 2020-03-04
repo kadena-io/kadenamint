@@ -11,6 +11,7 @@
 module Kadenamint where
 
 import Control.Concurrent.Async                         (async, cancel)
+import Control.Lens                                     ((^.))
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (ReaderT(..), runReaderT)
 import qualified Data.Aeson as Aeson
@@ -57,17 +58,24 @@ runEverything = do
   initProcess
   timelineCoinContract
 
-runKadenamintNodeDir :: MonadIO m => Text -> m ()
-runKadenamintNodeDir = runNodeDir runABCI
+withNode :: MonadIO m => InitializedNode -> m ()
+withNode n = liftIO $ do
+  let home = n ^. initializedNode_home
 
-runKadenamintNode :: InitializedNode -> IO ()
-runKadenamintNode = runNode runABCI
+  pactDbEnv <- initDb $ T.unpack home <> "/pact-db"
+  runABCI pactDbEnv n
+
+runKadenamintNodeDir :: MonadIO m => Text -> m ()
+runKadenamintNodeDir = runNodeDir withNode
+
+runKadenamintNode :: MonadIO m => InitializedNode -> m ()
+runKadenamintNode = runNode withNode
 
 withKadenamintNetwork
   :: Int
   -> (Text -> [InitializedNode] -> IO ())
   -> IO ()
-withKadenamintNetwork = withNetwork runABCI
+withKadenamintNetwork = withNetwork withNode
 
 showBalancesTx :: MonadIO m => InitializedNode -> m ()
 showBalancesTx = broadcastPact showBalances

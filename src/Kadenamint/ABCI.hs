@@ -49,14 +49,11 @@ abciEnv moniker = Env
       sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> moniker <> " | " <> x
   }
 
-runABCI :: InitializedNode -> IO ()
-runABCI n = do
-  let cfg = n ^. initializedNode_config
-      home = n ^. initializedNode_home
-
-  pactDbEnv <- initDb $ T.unpack home <> "/pact-db"
-
+runABCI :: DB -> InitializedNode -> IO ()
+runABCI pactDbEnv n = do
   let
+    cfg = n ^. initializedNode_config
+
     env = abciEnv $ _config_moniker cfg
 
     (_protocol, rest) = cleave "://" (cfg ^. config_proxyApp)
