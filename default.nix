@@ -6,8 +6,6 @@
 kpkgs.rp.project ({ pkgs, hackGet, ... }:
   let
     hs-abci = hackGet ./dep/hs-abci;
-    pact = hackGet ./dep/pact;
-    which = hackGet ./dep/which;
     tendermint = pkgs.callPackage ./dep/tendermint.nix {};
 
     overrides = with pkgs.haskell.lib; pkgs.lib.foldr pkgs.lib.composeExtensions  (_: _: {}) [
@@ -21,8 +19,6 @@ kpkgs.rp.project ({ pkgs, hackGet, ... }:
             wrapProgram "$out"/bin/kadenamint --set SBV_Z3 ${pkgs.z3}/bin/z3
           '';
         });
-
-        pact = dontCoverage (addBuildDepend super.pact pkgs.z3);
 
         tomland = dontCheck (self.callHackageDirect {
           pkg = "tomland";
@@ -43,7 +39,6 @@ kpkgs.rp.project ({ pkgs, hackGet, ... }:
     };
 
     packages = {
-      inherit pact which;
       kadenamint = kpkgs.gitignoreSource ./.;
     };
 
