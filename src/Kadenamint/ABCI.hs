@@ -143,7 +143,7 @@ runPactTransaction logParsed logEvaluated accept reject pactDbEnv shouldRollback
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
       . liftEither . decodeBase64String
 
-    eval cmd = applyCmd pactDbEnv id shouldRollback cmd runCmd
+    eval = applyCmd pactDbEnv id shouldRollback runCmd
 
     parse txt = liftEither $ case T.readMaybe (T.unpack txt) of
       Nothing -> Left ("Failed to parse transaction", Nothing)

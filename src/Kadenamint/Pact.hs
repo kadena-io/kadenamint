@@ -63,10 +63,10 @@ applyCmd
   => DB
   -> (EvalState -> EvalState)
   -> Bool
-  -> Command Text
   -> ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO a)
+  -> Command Text
   -> m a
-applyCmd (DB pactDbEnv) stateF shouldRollback cmd eval = liftIO $ do
+applyCmd (DB pactDbEnv) stateF shouldRollback eval cmd = liftIO $ do
   case verifyCommand $ fmap T.encodeUtf8 cmd of
     f@ProcFail{} -> error (show f)
     ProcSucc (c :: Command (Payload PublicMeta ParsedCode)) -> do
@@ -105,7 +105,7 @@ runExec withExec _ = \case
 applyGenesisYaml :: MonadIO m => DB -> FilePath -> m EvalResult
 applyGenesisYaml pactDbEnv fp = do
   (_, cmd) <- liftIO $ mkApiReq fp
-  applyCmd pactDbEnv (initCapabilities [magic_COINBASE]) False cmd runCmd
+  applyCmd pactDbEnv (initCapabilities [magic_COINBASE]) False runCmd cmd
 
 mkExec' :: MonadIO m => Text -> Maybe Text -> m (Command Text)
 mkExec' code sender = liftIO $ do
@@ -158,7 +158,7 @@ localHandler ::  DB -> Command Text -> Handler (CommandResult Hash)
 localHandler db cmd = do
   let maxGas (GasEnv (GasLimit g) _ _) = Gas $ fromIntegral g
   liftIO $ do
-    er <- catchesPactError $ applyCmd db id True cmd runExec
+    er <- catchesPactError $ applyCmd db id True runExec cmd
     pure $ toHashCommandResult $ CommandResult
       { _crReqKey = cmdToRequestKey cmd
       , _crTxId = _erTxId <=< preview _Right $ er
