@@ -1,12 +1,16 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeOperators #-}
 module Kadenamint.Pact where
 
 import Control.Lens (over, preview, set, strict, view, _Just, _Right, (&), (^.), (.~))
 import Control.Monad ((<=<))
 import Control.Monad.IO.Class (MonadIO(..))
+import Data.Aeson (ToJSON)
 import qualified Data.Aeson as Aeson
 import Data.Bool (bool)
 import Data.ByteString (ByteString)
@@ -16,11 +20,13 @@ import Data.FileEmbed (embedFile)
 import Data.Foldable (Foldable(..))
 import qualified Data.HashMap.Strict as HM
 import Data.Maybe (fromMaybe)
+import Data.Proxy (Proxy(..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Yaml as Y
-import Servant (Handler(..), err404, serve, throwError, (:<|>)(..))
+import GHC.Generics
+import Servant (Get, Handler(..), JSON, err404, serve, throwError, (:<|>)(..), (:>))
 import Network.Wai.Handler.Warp (run)
 
 import Pact.ApiReq (ApiKeyPair(..), mkApiReq, mkExec, mkKeyPairs)
@@ -41,7 +47,7 @@ import Pact.Types.Hash (Hash(..))
 import Pact.Types.Persistence (ExecutionMode(..))
 import Pact.Types.Runtime (Gas(..), GasEnv(..), GasLimit(..), EvalState, ModuleName(..), QualifiedName(..), TxLog
                           , catchesPactError, evalCapabilities, pactHash, permissiveNamespacePolicy)
-import Pact.Server.API (apiV1API)
+import Pact.Server.API (ApiV1API)
 import Pact.Types.API (ListenResponse, ListenerRequest, Poll, PollResponses, RequestKeys, SubmitBatch)
 import Pact.Types.Server (throwCmdEx)
 
@@ -174,16 +180,47 @@ localHandler db cmd = do
     noCont = assume Assumption_NoLocalContinuations Nothing
     noMetadata = todo Todo_PlatformMetadata Nothing
 
+infoHandler :: KadenamintVersion -> Handler NodeInfo
+infoHandler v = pure $ NodeInfo
+  { nodeVersion = v
+  , nodeApiVersion = todo Todo_Versioning "0.0"
+  , nodeChains = todo Todo_Naming ["0"]
+  , nodeNumberOfChains = 1
+  }
+
+
+data KadenamintVersion
+  = KadenamintVersion_Devnet_00
+  deriving (Eq, Ord, Show, Generic)
+
+instance ToJSON KadenamintVersion where
+  toJSON KadenamintVersion_Devnet_00 = "kadenamint-devnet-00"
+
+data NodeInfo = NodeInfo
+  { nodeVersion :: KadenamintVersion
+  , nodeApiVersion :: Text
+  , nodeChains :: [Text]
+  , nodeNumberOfChains :: !Int
+  } deriving (Generic)
+
+instance ToJSON NodeInfo
+
+type PactAPI = ApiV1API
+type ChainweaverAPI = "info" :> Get '[JSON] NodeInfo
+
+kadenamintApi :: Proxy (ChainweaverAPI :<|> PactAPI)
+kadenamintApi = Proxy
+
 runApiServer :: DB -> IO ()
 runApiServer db = do
-  run port $ serve pactApi pactHandlers
+  run port $ serve kadenamintApi $ chainweaverApiHandlers :<|> todo Todo_Versioning pactApiHandlers
   where
     port = assume Assumption_FreePort 8081
-    pactApi = apiV1API
-    pactHandlers = sendHandler
-              :<|> pollHandler
-              :<|> listenHandler
-              :<|> localHandler db
+    chainweaverApiHandlers = infoHandler KadenamintVersion_Devnet_00
+    pactApiHandlers = sendHandler
+                 :<|> pollHandler
+                 :<|> listenHandler
+                 :<|> localHandler db
 
 encodeToByteString :: Aeson.ToJSON a => a -> ByteString
 encodeToByteString = view strict . Aeson.encode

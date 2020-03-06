@@ -94,6 +94,8 @@ data Todo
   | Todo_PlatformMetadata
   | Todo_SerializeEval
   | Todo_ImplementEndpoint
+  | Todo_Versioning
+  | Todo_Naming
   | Todo_Upstream
 
 data Assumption
