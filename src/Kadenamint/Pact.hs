@@ -58,7 +58,7 @@ initDb path = liftIO $ do
   initSchema pactDbEnv
   pure $ DB pactDbEnv
 
-execCmd
+applyCmd
   :: MonadIO m
   => DB
   -> (EvalState -> EvalState)
@@ -66,7 +66,7 @@ execCmd
   -> Command Text
   -> ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO a)
   -> m a
-execCmd (DB pactDbEnv) stateF shouldRollback cmd eval = liftIO $ do
+applyCmd (DB pactDbEnv) stateF shouldRollback cmd eval = liftIO $ do
   case verifyCommand $ fmap T.encodeUtf8 cmd of
     f@ProcFail{} -> error (show f)
     ProcSucc (c :: Command (Payload PublicMeta ParsedCode)) -> do
@@ -92,20 +92,20 @@ execCmd (DB pactDbEnv) stateF shouldRollback cmd eval = liftIO $ do
 
       todo Todo_SerializeEval $ eval withExec withCont $ p ^. pPayload
 
-runAnything :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
-runAnything withExec withCont = \case
+runCmd :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
+runCmd withExec withCont = \case
   Exec x -> withExec x
   Continuation c -> withCont c
 
-refuseContinuation :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
-refuseContinuation withExec _ = \case
+runExec :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
+runExec withExec _ = \case
   Exec x -> withExec x
   _ -> throwCmdEx "local continuations not supported"
 
-execGenesis :: MonadIO m => DB -> FilePath -> m EvalResult
-execGenesis pactDbEnv fp = do
-  (_, exec) <- liftIO $ mkApiReq fp
-  execCmd pactDbEnv (initCapabilities [magic_COINBASE]) False exec runAnything
+applyGenesisYaml :: MonadIO m => DB -> FilePath -> m EvalResult
+applyGenesisYaml pactDbEnv fp = do
+  (_, cmd) <- liftIO $ mkApiReq fp
+  applyCmd pactDbEnv (initCapabilities [magic_COINBASE]) False cmd runCmd
 
 mkExec' :: MonadIO m => Text -> Maybe Text -> m (Command Text)
 mkExec' code sender = liftIO $ do
@@ -158,7 +158,7 @@ localHandler ::  DB -> Command Text -> Handler (CommandResult Hash)
 localHandler db cmd = do
   let maxGas (GasEnv (GasLimit g) _ _) = Gas $ fromIntegral g
   liftIO $ do
-    er <- catchesPactError $ execCmd db id True cmd refuseContinuation
+    er <- catchesPactError $ applyCmd db id True cmd runExec
     pure $ toHashCommandResult $ CommandResult
       { _crReqKey = cmdToRequestKey cmd
       , _crTxId = _erTxId <=< preview _Right $ er
