@@ -93,7 +93,7 @@ app pactDbEnv = App $ \case
 
 initChain :: HandlerEffects m => DB -> InitChain -> m (Response 'MTInitChain)
 initChain pactDbEnv _ic = abortOnError $ do
-  let eval = execYaml pactDbEnv
+  let eval = execGenesis pactDbEnv
   void $ eval "pact/coin-contract/load-coin-contract.yaml"
   log "Initialized coin contract" Nothing
   void $ eval "pact/coin-contract/grants.yaml"
@@ -143,7 +143,7 @@ runPactTransaction logParsed logEvaluated accept reject pactDbEnv shouldRollback
     decode = withExceptT (\err -> ("Failed decode with error", Just $ tshow err))
       . liftEither . decodeBase64String
 
-    eval = execCmd pactDbEnv id shouldRollback
+    eval cmd = execCmd pactDbEnv id shouldRollback cmd runAnything
 
     parse txt = liftEither $ case T.readMaybe (T.unpack txt) of
       Nothing -> Left ("Failed to parse transaction", Nothing)

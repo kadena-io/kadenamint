@@ -42,7 +42,7 @@ import Pact.Types.Command (Command(..), ParsedCode(..), Payload(..), ProcessedCo
 import Pact.Types.ChainMeta (PublicMeta, pmSender)
 import Pact.Types.Crypto (PPKScheme(..), PrivateKeyBS(..), PublicKeyBS(..))
 import Pact.Types.Logger (Loggers(newLogger), alwaysLog)
-import Pact.Types.RPC (PactRPC(..), ExecMsg(..))
+import Pact.Types.RPC (PactRPC(..), ContMsg(..), ExecMsg(..))
 import Pact.Types.SPV (noSPVSupport)
 import Pact.Types.Hash (Hash(..))
 import Pact.Types.Persistence (ExecutionMode(..))
@@ -57,8 +57,15 @@ initDb path = liftIO $ do
   initSchema pactDbEnv
   pure $ DB pactDbEnv
 
-execCmd :: MonadIO m => DB -> (EvalState -> EvalState) -> Bool -> Command Text -> m EvalResult
-execCmd (DB pactDbEnv) stateF shouldRollback cmd = liftIO $ do
+execCmd
+  :: MonadIO m
+  => DB
+  -> (EvalState -> EvalState)
+  -> Bool
+  -> Command Text
+  -> ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO a)
+  -> m a
+execCmd (DB pactDbEnv) stateF shouldRollback cmd eval = liftIO $ do
   case verifyCommand $ fmap T.encodeUtf8 cmd of
     f@ProcFail{} -> error (show f)
     ProcSucc (c :: Command (Payload PublicMeta ParsedCode)) -> do
@@ -79,14 +86,20 @@ execCmd (DB pactDbEnv) stateF shouldRollback cmd = liftIO $ do
           def
           def
 
-      case p ^. pPayload of
-        Exec (ExecMsg code execData) -> evalExec interpreter (setupEvalEnv' (Just execData)) code
-        Continuation cont -> evalContinuation interpreter (setupEvalEnv' Nothing) cont
+        withExec (ExecMsg code execData) = evalExec interpreter (setupEvalEnv' (Just execData)) code
+        withCont cont = evalContinuation interpreter (setupEvalEnv' Nothing) cont
 
-execYaml :: MonadIO m => DB -> FilePath -> m EvalResult
-execYaml pactDbEnv fp = do
+      eval withExec withCont $ p ^. pPayload
+
+runAnything :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
+runAnything withExec withCont = \case
+  Exec x -> withExec x
+  Continuation c -> withCont c
+
+execGenesis :: MonadIO m => DB -> FilePath -> m EvalResult
+execGenesis pactDbEnv fp = do
   (_, exec) <- liftIO $ mkApiReq fp
-  execCmd pactDbEnv (initCapabilities [magic_COINBASE]) False exec
+  execCmd pactDbEnv (initCapabilities [magic_COINBASE]) False exec runAnything
 
 mkExec' :: MonadIO m => Text -> Maybe Text -> m (Command Text)
 mkExec' code sender = liftIO $ do
