@@ -82,3 +82,21 @@ _TODO_ _ = id
 
 _ASSUME_ :: Text -> a -> a
 _ASSUME_ _ = id
+
+todo :: Todo -> a -> a
+todo _ = id
+
+assume :: Assumption -> a -> a
+assume _ = id
+
+data Todo
+  = Todo_NonemptyPactCode
+  | Todo_PlatformMetadata
+  | Todo_SerializeEval
+  | Todo_ImplementEndpoint
+  | Todo_Upstream
+
+data Assumption
+  = Assumption_NoLocalContinuations
+  | Assumption_OnlyEvalLogs
+  | Assumption_FreePort

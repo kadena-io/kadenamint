@@ -29,12 +29,14 @@ library
                , memory
                , mtl
                , pact
+               , servant-server
                , shelly
                , text
                , time
                , tomland
                , transformers
                , unordered-containers
+               , warp
                , which
                , yaml
 

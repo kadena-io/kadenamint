@@ -1,21 +1,11 @@
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveGeneric#-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NumDecimals #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE ViewPatterns #-}
-
 module Kadenamint.Pact where
 
-import Control.Lens (set, (&), (^.), (.~))
+import Control.Lens (over, preview, set, strict, view, _Just, _Right, (&), (^.), (.~))
+import Control.Monad ((<=<))
 import Control.Monad.IO.Class (MonadIO(..))
 import qualified Data.Aeson as Aeson
 import Data.Bool (bool)
@@ -30,6 +20,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Yaml as Y
+import Servant (Handler(..), err404, serve, throwError, (:<|>)(..))
+import Network.Wai.Handler.Warp (run)
 
 import Pact.ApiReq (ApiKeyPair(..), mkApiReq, mkExec, mkKeyPairs)
 import Pact.Interpreter (EvalResult(..), MsgData(..), PactDbEnv, defaultInterpreterState
@@ -37,8 +29,9 @@ import Pact.Interpreter (EvalResult(..), MsgData(..), PactDbEnv, defaultInterpre
 import Pact.Gas (freeGasEnv)
 import Pact.PersistPactDb (DbEnv)
 import Pact.Persist.SQLite (SQLite, SQLiteConfig(..))
-import Pact.Types.Capability (SigCapability(..))
-import Pact.Types.Command (Command(..), ParsedCode(..), Payload(..), ProcessedCommand(..), cmdPayload, pPayload, pSigners, verifyCommand)
+import Pact.Types.Capability (CapScope(..), CapSlot(..), SigCapability(..), capStack)
+import Pact.Types.Command ( Command(..), CommandResult(..), PactResult(..), ParsedCode(..), Payload(..), ProcessedCommand(..)
+                          , cmdToRequestKey, cmdPayload, crLogs, pPayload, pSigners, verifyCommand)
 import Pact.Types.ChainMeta (PublicMeta, pmSender)
 import Pact.Types.Crypto (PPKScheme(..), PrivateKeyBS(..), PublicKeyBS(..))
 import Pact.Types.Logger (Loggers(newLogger), alwaysLog)
@@ -46,10 +39,18 @@ import Pact.Types.RPC (PactRPC(..), ContMsg(..), ExecMsg(..))
 import Pact.Types.SPV (noSPVSupport)
 import Pact.Types.Hash (Hash(..))
 import Pact.Types.Persistence (ExecutionMode(..))
-import Pact.Types.Capability (CapScope(..), CapSlot(..), capStack)
-import Pact.Types.Runtime (EvalState, ModuleName(..), QualifiedName(..), evalCapabilities, permissiveNamespacePolicy)
+import Pact.Types.Runtime (Gas(..), GasEnv(..), GasLimit(..), EvalState, ModuleName(..), QualifiedName(..), TxLog
+                          , catchesPactError, evalCapabilities, pactHash, permissiveNamespacePolicy)
+import Pact.Server.API (apiV1API)
+import Pact.Types.API (ListenResponse, ListenerRequest, Poll, PollResponses, RequestKeys, SubmitBatch)
+import Pact.Types.Server (throwCmdEx)
+
+import Kadenamint.Common
 
 newtype DB = DB { unDB :: PactDbEnv (DbEnv SQLite) }
+
+kadenamintGasEnv :: GasEnv
+kadenamintGasEnv = freeGasEnv
 
 initDb :: MonadIO m => FilePath -> m DB
 initDb path = liftIO $ do
@@ -80,7 +81,7 @@ execCmd (DB pactDbEnv) stateF shouldRollback cmd eval = liftIO $ do
           (bool Transactional Local shouldRollback)
           (MsgData (fromMaybe Aeson.Null execData) Nothing (Hash "") signers)
           initRefStore
-          freeGasEnv
+          kadenamintGasEnv
           permissiveNamespacePolicy
           noSPVSupport
           def
@@ -89,12 +90,17 @@ execCmd (DB pactDbEnv) stateF shouldRollback cmd eval = liftIO $ do
         withExec (ExecMsg code execData) = evalExec interpreter (setupEvalEnv' (Just execData)) code
         withCont cont = evalContinuation interpreter (setupEvalEnv' Nothing) cont
 
-      eval withExec withCont $ p ^. pPayload
+      todo Todo_SerializeEval $ eval withExec withCont $ p ^. pPayload
 
 runAnything :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
 runAnything withExec withCont = \case
   Exec x -> withExec x
   Continuation c -> withCont c
+
+refuseContinuation :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
+refuseContinuation withExec _ = \case
+  Exec x -> withExec x
+  _ -> throwCmdEx "local continuations not supported"
 
 execGenesis :: MonadIO m => DB -> FilePath -> m EvalResult
 execGenesis pactDbEnv fp = do
@@ -138,3 +144,49 @@ mkMagicCapSlot c = CapSlot CapCallStack cap []
     mn = ModuleName "coin" Nothing
     fqn = QualifiedName mn c def
     cap = SigCapability fqn []
+
+sendHandler :: SubmitBatch -> Handler RequestKeys
+sendHandler _ = todo Todo_ImplementEndpoint $ throwError err404
+
+pollHandler :: Poll -> Handler PollResponses
+pollHandler _ = todo Todo_ImplementEndpoint $ throwError err404
+
+listenHandler :: ListenerRequest -> Handler ListenResponse
+listenHandler _ = todo Todo_ImplementEndpoint $ throwError err404
+
+localHandler ::  DB -> Command Text -> Handler (CommandResult Hash)
+localHandler db cmd = do
+  let maxGas (GasEnv (GasLimit g) _ _) = Gas $ fromIntegral g
+  liftIO $ do
+    er <- catchesPactError $ execCmd db id True cmd refuseContinuation
+    pure $ toHashCommandResult $ CommandResult
+      { _crReqKey = cmdToRequestKey cmd
+      , _crTxId = _erTxId <=< preview _Right $ er
+      , _crResult = PactResult $ fmap lastOutput er
+      , _crGas = either (const $ maxGas kadenamintGasEnv) _erGas er
+      , _crLogs = evalLogs er
+      , _crContinuation = noCont
+      , _crMetaData = noMetadata
+      }
+  where
+    lastOutput = todo Todo_NonemptyPactCode $ last . _erOutput
+    evalLogs = assume Assumption_OnlyEvalLogs $ fmap _erLogs . preview _Right
+    noCont = assume Assumption_NoLocalContinuations Nothing
+    noMetadata = todo Todo_PlatformMetadata Nothing
+
+runApiServer :: DB -> IO ()
+runApiServer db = do
+  run port $ serve pactApi pactHandlers
+  where
+    port = assume Assumption_FreePort 8081
+    pactApi = apiV1API
+    pactHandlers = sendHandler
+              :<|> pollHandler
+              :<|> listenHandler
+              :<|> localHandler db
+
+encodeToByteString :: Aeson.ToJSON a => a -> ByteString
+encodeToByteString = view strict . Aeson.encode
+
+toHashCommandResult :: CommandResult [TxLog Aeson.Value] -> CommandResult Hash
+toHashCommandResult = todo Todo_Upstream $ over (crLogs . _Just) $ pactHash . encodeToByteString

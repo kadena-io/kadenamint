@@ -1,16 +1,9 @@
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeFamilies #-}
-
 module Kadenamint where
 
-import Control.Concurrent.Async                         (async, cancel)
+import Control.Concurrent.Async                         (async, cancel, withAsync)
 import Control.Lens                                     ((^.))
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (ReaderT(..), runReaderT)
@@ -63,7 +56,7 @@ withNode n = liftIO $ do
   let home = n ^. initializedNode_home
 
   pactDbEnv <- initDb $ T.unpack home <> "/pact-db"
-  runABCI pactDbEnv n
+  withAsync (runApiServer pactDbEnv) $ \_ -> runABCI pactDbEnv n
 
 runKadenamintNodeDir :: MonadIO m => Text -> m ()
 runKadenamintNodeDir = runNodeDir withNode
