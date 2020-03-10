@@ -7,7 +7,7 @@
 {-# LANGUAGE TypeOperators #-}
 module Kadenamint.Pact where
 
-import Control.Lens (over, preview, set, strict, view, _Just, _Right, (&), (^.), (.~))
+import Control.Lens (preview, set, _Right, (&), (^.), (.~))
 import Control.Monad ((<=<))
 import Control.Monad.IO.Class (MonadIO(..))
 import Data.Aeson (ToJSON)
@@ -37,7 +37,7 @@ import Pact.PersistPactDb (DbEnv)
 import Pact.Persist.SQLite (SQLite, SQLiteConfig(..))
 import Pact.Types.Capability (CapScope(..), CapSlot(..), SigCapability(..), capStack)
 import Pact.Types.Command ( Command(..), CommandResult(..), PactResult(..), ParsedCode(..), Payload(..), ProcessedCommand(..)
-                          , cmdToRequestKey, cmdPayload, crLogs, pPayload, pSigners, verifyCommand)
+                          , cmdToRequestKey, cmdPayload, pPayload, pSigners, verifyCommand)
 import Pact.Types.ChainMeta (PublicMeta, pmSender)
 import Pact.Types.Crypto (PPKScheme(..), PrivateKeyBS(..), PublicKeyBS(..))
 import Pact.Types.Logger (Loggers(newLogger), alwaysLog)
@@ -45,9 +45,10 @@ import Pact.Types.RPC (PactRPC(..), ContMsg(..), ExecMsg(..))
 import Pact.Types.SPV (noSPVSupport)
 import Pact.Types.Hash (Hash(..))
 import Pact.Types.Persistence (ExecutionMode(..))
-import Pact.Types.Runtime (Gas(..), GasEnv(..), GasLimit(..), EvalState, ModuleName(..), QualifiedName(..), TxLog
-                          , catchesPactError, evalCapabilities, pactHash, permissiveNamespacePolicy)
+import Pact.Types.Runtime (Gas(..), GasEnv(..), GasLimit(..), EvalState, ModuleName(..), QualifiedName(..)
+                          , catchesPactError, evalCapabilities, permissiveNamespacePolicy)
 import Pact.Server.API (ApiV1API)
+import Pact.Server.PactService (fullToHashLogCr)
 import Pact.Types.API (ListenResponse, ListenerRequest, Poll, PollResponses, RequestKeys, SubmitBatch)
 import Pact.Types.Server (throwCmdEx)
 
@@ -165,12 +166,12 @@ localHandler db cmd = do
   let maxGas (GasEnv (GasLimit g) _ _) = Gas $ fromIntegral g
   liftIO $ do
     er <- catchesPactError $ applyCmd db id True runExec cmd
-    pure $ toHashCommandResult $ CommandResult
+    pure $ CommandResult
       { _crReqKey = cmdToRequestKey cmd
       , _crTxId = _erTxId <=< preview _Right $ er
       , _crResult = PactResult $ fmap lastOutput er
       , _crGas = either (const $ maxGas kadenamintGasEnv) _erGas er
-      , _crLogs = evalLogs er
+      , _crLogs = fullToHashLogCr <$> evalLogs er
       , _crContinuation = noCont
       , _crMetaData = noMetadata
       }
@@ -221,9 +222,3 @@ runApiServer db = do
                  :<|> pollHandler
                  :<|> listenHandler
                  :<|> localHandler db
-
-encodeToByteString :: Aeson.ToJSON a => a -> ByteString
-encodeToByteString = view strict . Aeson.encode
-
-toHashCommandResult :: CommandResult [TxLog Aeson.Value] -> CommandResult Hash
-toHashCommandResult = todo Todo_Upstream $ over (crLogs . _Just) $ pactHash . encodeToByteString
