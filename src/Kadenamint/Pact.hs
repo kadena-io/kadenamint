@@ -25,17 +25,18 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Yaml as Y
-import GHC.Generics
+import Data.Traversable (for)
+import GHC.Generics (Generic)
 import Servant (Get, Handler(..), JSON, err404, serve, throwError, (:<|>)(..), (:>))
 import Network.Wai.Handler.Warp (run)
 
-import Pact.ApiReq (ApiKeyPair(..), mkApiReq, mkExec, mkKeyPairs)
+import Pact.ApiReq (ApiKeyPair(..), mkExec, mkKeyPairs)
 import Pact.Interpreter (EvalResult(..), MsgData(..), PactDbEnv, defaultInterpreterState
                         , evalContinuation, evalExec, initRefStore, initSchema, mkSQLiteEnv, setupEvalEnv)
 import Pact.Gas (freeGasEnv)
 import Pact.PersistPactDb (DbEnv)
 import Pact.Persist.SQLite (SQLite, SQLiteConfig(..))
-import Pact.Types.Capability (CapScope(..), CapSlot(..), SigCapability(..), capStack)
+import Pact.Types.Capability (CapSlot(..), SigCapability(..), capStack)
 import Pact.Types.Command ( Command(..), CommandResult(..), PactResult(..), ParsedCode(..), Payload(..), ProcessedCommand(..)
                           , cmdToRequestKey, cmdPayload, pPayload, pSigners, verifyCommand)
 import Pact.Types.ChainMeta (PublicMeta, pmSender)
@@ -45,7 +46,7 @@ import Pact.Types.RPC (PactRPC(..), ContMsg(..), ExecMsg(..))
 import Pact.Types.SPV (noSPVSupport)
 import Pact.Types.Hash (Hash(..))
 import Pact.Types.Persistence (ExecutionMode(..))
-import Pact.Types.Runtime (Gas(..), GasEnv(..), GasLimit(..), EvalState, ModuleName(..), QualifiedName(..)
+import Pact.Types.Runtime (Gas(..), GasEnv(..), GasLimit(..), EvalState
                           , catchesPactError, evalCapabilities, permissiveNamespacePolicy)
 import Pact.Server.API (ApiV1API)
 import Pact.Server.PactService (fullToHashLogCr)
@@ -99,24 +100,19 @@ applyCmd (DB pactDbEnv) stateF shouldRollback eval cmd = liftIO $ do
 
       todo Todo_SerializeEval $ eval withExec withCont $ p ^. pPayload
 
-runCmd :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
+runCmd :: (ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult
 runCmd withExec withCont = \case
   Exec x -> withExec x
   Continuation c -> withCont c
 
-runExec :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
+runExec :: (ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult
 runExec withExec _ = \case
   Exec x -> withExec x
   _ -> throwCmdEx "local continuations not supported"
 
-applyGenesisYaml :: MonadIO m => DB -> FilePath -> m EvalResult
-applyGenesisYaml pactDbEnv fp = do
-  (_, cmd) <- liftIO $ mkApiReq fp
-  applyCmd pactDbEnv (initCapabilities [magic_COINBASE]) False runCmd cmd
-
-mkExec' :: MonadIO m => Text -> Maybe Text -> m (Command Text)
-mkExec' code sender = liftIO $ do
-  senderKey <- traverse stockKey sender
+mkExec' :: MonadIO m => Text -> Maybe Text -> Maybe [SigCapability] -> m (Command Text)
+mkExec' code sender caps = liftIO $ do
+  senderKey <- for sender $ \s -> stockKey s caps
   kps <- mkKeyPairs $ toList senderKey
 
   mkExec
@@ -127,30 +123,20 @@ mkExec' code sender = liftIO $ do
     Nothing
     Nothing
 
-stockKey :: Text -> IO ApiKeyPair
-stockKey s = do
+stockKey :: Text -> Maybe [SigCapability] -> IO ApiKeyPair
+stockKey s caps = do
     let Right (Y.Object o) = Y.decodeEither' stockKeyFile
         Just (Y.Object kp) = HM.lookup s o
         Just (Y.String pub) = HM.lookup "public" kp
         Just (Y.String priv) = HM.lookup "secret" kp
         mkKeyBS = fst . B16.decode . T.encodeUtf8
-    return $ ApiKeyPair (PrivBS $ mkKeyBS priv) (Just $ PubBS $ mkKeyBS pub) Nothing (Just ED25519) Nothing
+    return $ ApiKeyPair (PrivBS $ mkKeyBS priv) (Just $ PubBS $ mkKeyBS pub) Nothing (Just ED25519) caps
 
 stockKeyFile :: ByteString
-stockKeyFile = $(embedFile "pact/coin-contract/keys.yaml")
+stockKeyFile = $(embedFile "pact/genesis/devnet/keys.yaml")
 
 initCapabilities :: [CapSlot SigCapability] -> EvalState -> EvalState
 initCapabilities cs = set (evalCapabilities . capStack) cs
-
-magic_COINBASE :: CapSlot SigCapability
-magic_COINBASE = mkMagicCapSlot "COINBASE"
-
-mkMagicCapSlot :: Text -> CapSlot SigCapability
-mkMagicCapSlot c = CapSlot CapCallStack cap []
-  where
-    mn = ModuleName "coin" Nothing
-    fqn = QualifiedName mn c def
-    cap = SigCapability fqn []
 
 sendHandler :: SubmitBatch -> Handler RequestKeys
 sendHandler _ = todo Todo_ImplementEndpoint $ throwError err404
@@ -202,7 +188,7 @@ data NodeInfo = NodeInfo
   , nodeApiVersion :: Text
   , nodeChains :: [Text]
   , nodeNumberOfChains :: !Int
-  } deriving (Generic)
+  } deriving Generic
 
 instance ToJSON NodeInfo
 

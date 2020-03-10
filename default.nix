@@ -20,6 +20,8 @@ kpkgs.rp.project ({ pkgs, hackGet, ... }:
           '';
         });
 
+        pact = dontCoverage super.pact;
+
         tomland = dontCheck (self.callHackageDirect {
           pkg = "tomland";
           ver = "1.0.1.0";

@@ -18,6 +18,7 @@ library
                , colour
                , conduit-extra
                , data-default
+               , Decimal
                , file-embed
                , here
                , hs-abci-server

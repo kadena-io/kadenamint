@@ -9,7 +9,7 @@
 
 module Kadenamint.ABCI where
 
-import Control.Lens                                     ((&), (^.), (.~))
+import Control.Lens                                     ((&), (^.), (.~), (??))
 import Control.Monad                                    ((>=>))
 import Control.Monad.Except                             (MonadError(..), ExceptT(..), liftEither, runExceptT, withExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
@@ -18,7 +18,6 @@ import Control.Monad.Trans.Class                        (lift)
 import qualified Data.Aeson as Aeson
 import Data.Conduit.Network                             (serverSettings)
 import Data.Default                                     (Default(..))
-import Data.Functor                                     (void)
 import Data.Maybe                                       (fromMaybe)
 import Data.String                                      (IsString(..))
 import Data.Text                                        (Text)
@@ -39,6 +38,7 @@ import qualified Pact.Interpreter as Pact
 import qualified Pact.Types.Command as Pact
 import qualified Pact.Types.Pretty as Pact
 
+import Kadenamint.Coin
 import Kadenamint.Common
 import Kadenamint.Pact
 import Kadenamint.Tendermint
@@ -92,13 +92,7 @@ app pactDbEnv = App $ \case
   RequestCommit _ -> pure def
 
 initChain :: HandlerEffects m => DB -> InitChain -> m (Response 'MTInitChain)
-initChain pactDbEnv _ic = abortOnError $ do
-  let eval = applyGenesisYaml pactDbEnv
-  void $ eval "pact/coin-contract/load-coin-contract.yaml"
-  log "Initialized coin contract" Nothing
-  void $ eval "pact/coin-contract/grants.yaml"
-  log "Initialized coin accounts" Nothing
-
+initChain pactDbEnv _ic = abortOnError $ applyCoinGenesis pactDbEnv (log ?? Nothing)
   where
     abortOnError = runExceptT >=> \case
       Right _termName -> pure def
