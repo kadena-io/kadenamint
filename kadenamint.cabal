@@ -37,6 +37,8 @@ library
                , tomland
                , transformers
                , unordered-containers
+               , wai
+               , wai-cors
                , warp
                , which
                , yaml

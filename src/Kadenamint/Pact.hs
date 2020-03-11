@@ -28,7 +28,9 @@ import qualified Data.Yaml as Y
 import Data.Traversable (for)
 import GHC.Generics (Generic)
 import Servant (Get, Handler(..), JSON, err404, serve, throwError, (:<|>)(..), (:>))
+import Network.Wai (Middleware)
 import Network.Wai.Handler.Warp (run)
+import Network.Wai.Middleware.Cors (cors, corsRequestHeaders, simpleCorsResourcePolicy, simpleHeaders)
 
 import Pact.ApiReq (ApiKeyPair(..), mkExec, mkKeyPairs)
 import Pact.Interpreter (EvalResult(..), MsgData(..), PactDbEnv, defaultInterpreterState
@@ -200,7 +202,7 @@ kadenamintApi = Proxy
 
 runApiServer :: DB -> IO ()
 runApiServer db = do
-  run port $ serve kadenamintApi $ chainweaverApiHandlers :<|> todo Todo_Versioning pactApiHandlers
+  run port $ kadenamintCors $ serve kadenamintApi $ chainweaverApiHandlers :<|> todo Todo_Versioning pactApiHandlers
   where
     port = assume Assumption_FreePort 8081
     chainweaverApiHandlers = infoHandler KadenamintVersion_Devnet_00
@@ -208,3 +210,9 @@ runApiServer db = do
                  :<|> pollHandler
                  :<|> listenHandler
                  :<|> localHandler db
+
+-- Simple cors with actualy simpleHeaders which includes content-type.
+kadenamintCors :: Middleware
+kadenamintCors = cors . const . Just $ simpleCorsResourcePolicy
+    { corsRequestHeaders = simpleHeaders
+    }
