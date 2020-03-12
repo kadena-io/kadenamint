@@ -6,6 +6,8 @@ license: Apache-2.0
 
 library
   hs-source-dirs: src
+                  tests
+
   if impl(ghcjs)
     buildable: False
   build-depends: aeson
@@ -25,11 +27,14 @@ library
                , hs-abci-types
                , hs-abci-extra
                , hs-tendermint-client
+               , hspec
+               , http-client
                , http-types
                , lens
                , memory
                , mtl
                , pact
+               , servant-client
                , servant-server
                , shelly
                , text
@@ -53,6 +58,8 @@ library
     Kadenamint.Tendermint.Config
     Kadenamint.Tendermint.RPC
 
+    Tests
+
   ghc-options: -Wall
 
 executable kadenamint
@@ -62,3 +69,11 @@ executable kadenamint
     buildable: False
   build-depends: base
                , kadenamint
+
+test-suite api
+  type:           exitcode-stdio-1.0
+  main-is:        main.hs
+  hs-source-dirs: tests-bin
+
+  build-depends:    base
+                  , kadenamint

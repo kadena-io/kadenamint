@@ -1,0 +1,2 @@
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+cd $DIR && nix-shell default.nix -A shells.ghc --run "./internal/clean && ghcid -c 'cabal new-repl' -T 'Tests.test' --restart='kadenamint.cabal'"

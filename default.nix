@@ -11,14 +11,15 @@ kpkgs.rp.project ({ pkgs, hackGet, ... }:
     overrides = with pkgs.haskell.lib; pkgs.lib.foldr pkgs.lib.composeExtensions  (_: _: {}) [
       (import hs-abci {}).overrides
       (self: super: {
-        kadenamint = overrideCabal super.kadenamint (drv: {
+        # TODO: make tests as pure as possible
+        kadenamint = dontCheck (overrideCabal super.kadenamint (drv: {
           buildTools = (drv.buildTools or []) ++ [ pkgs.buildPackages.makeWrapper ];
           executableSystemDepends = (drv.executableSystemDepends or []) ++ [tendermint pkgs.z3];
           postFixup = ''
             ${drv.postFixup or ""}
             wrapProgram "$out"/bin/kadenamint --set SBV_Z3 ${pkgs.z3}/bin/z3
           '';
-        });
+        }));
 
         pact = dontCoverage super.pact;
 

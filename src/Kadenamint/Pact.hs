@@ -10,7 +10,7 @@ module Kadenamint.Pact where
 import Control.Lens (preview, set, _Right, (&), (^.), (.~))
 import Control.Monad ((<=<))
 import Control.Monad.IO.Class (MonadIO(..))
-import Data.Aeson (ToJSON)
+import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as Aeson
 import Data.Bool (bool)
 import Data.ByteString (ByteString)
@@ -169,7 +169,7 @@ localHandler db cmd = do
     noCont = assume Assumption_NoLocalContinuations Nothing
     noMetadata = todo Todo_PlatformMetadata Nothing
 
-infoHandler :: KadenamintVersion -> Handler NodeInfo
+infoHandler :: Version -> Handler NodeInfo
 infoHandler v = pure $ NodeInfo
   { nodeVersion = v
   , nodeApiVersion = todo Todo_Versioning "0.0"
@@ -178,26 +178,32 @@ infoHandler v = pure $ NodeInfo
   }
 
 
-data KadenamintVersion
-  = KadenamintVersion_Devnet_00
+data Version
+  = Version_Devnet_00
   deriving (Eq, Ord, Show, Generic)
 
-instance ToJSON KadenamintVersion where
-  toJSON KadenamintVersion_Devnet_00 = "kadenamint-devnet-00"
+instance ToJSON Version where
+  toJSON Version_Devnet_00 = "devnet00"
+
+instance FromJSON Version where
+  parseJSON (Aeson.String "devnet00") = pure Version_Devnet_00
+  parseJSON _ = fail "invalid kadenamint version"
 
 data NodeInfo = NodeInfo
-  { nodeVersion :: KadenamintVersion
+  { nodeVersion :: Version
   , nodeApiVersion :: Text
   , nodeChains :: [Text]
   , nodeNumberOfChains :: !Int
-  } deriving Generic
+  } deriving (Eq, Generic, Ord, Show)
 
+instance FromJSON NodeInfo
 instance ToJSON NodeInfo
 
-type PactAPI = ApiV1API
+type PactAPI = "chainweb" :> "0.0" :> "devnet00" :> "chain" :> "0" :> "pact" :> ApiV1API
 type ChainweaverAPI = "info" :> Get '[JSON] NodeInfo
+type KadenamintAPI = ChainweaverAPI :<|> PactAPI
 
-kadenamintApi :: Proxy (ChainweaverAPI :<|> PactAPI)
+kadenamintApi :: Proxy KadenamintAPI
 kadenamintApi = Proxy
 
 runApiServer :: DB -> IO ()
@@ -205,7 +211,7 @@ runApiServer db = do
   run port $ kadenamintCors $ serve kadenamintApi $ chainweaverApiHandlers :<|> todo Todo_Versioning pactApiHandlers
   where
     port = assume Assumption_FreePort 8081
-    chainweaverApiHandlers = infoHandler KadenamintVersion_Devnet_00
+    chainweaverApiHandlers = infoHandler Version_Devnet_00
     pactApiHandlers = sendHandler
                  :<|> pollHandler
                  :<|> listenHandler
