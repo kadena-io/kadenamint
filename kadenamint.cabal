@@ -46,6 +46,7 @@ library
   exposed-modules:
     Kadenamint
     Kadenamint.ABCI
+    Kadenamint.Coin
     Kadenamint.Common
     Kadenamint.Pact
     Kadenamint.Tendermint
