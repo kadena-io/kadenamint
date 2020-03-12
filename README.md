@@ -29,7 +29,7 @@ Launches a [hoogle](https://hoogle.haskell.org/) server locally, with documentat
 ##### `repl`
 Launches an Haskell repl where networks/nodes can be controlled interactively.
 
-##### `test`
+##### `run`
 Like `watch`, but will also run a Kadenamint network in a temporary directory and broadcast some coin transfer transactions, after compilation.
 
 ##### `tmux`
