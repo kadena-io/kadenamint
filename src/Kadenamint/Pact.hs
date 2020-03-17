@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -7,6 +8,7 @@
 {-# LANGUAGE TypeOperators #-}
 module Kadenamint.Pact where
 
+import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar)
 import Control.Lens (preview, set, _Right, (&), (^.), (.~))
 import Control.Monad ((<=<))
 import Control.Monad.IO.Class (MonadIO(..))
@@ -17,9 +19,10 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base16 as B16
 import Data.Default (Default (..))
 import Data.FileEmbed (embedFile)
-import Data.Foldable (Foldable(..))
+import Data.Foldable (Foldable(..), for_)
 import qualified Data.HashMap.Strict as HM
 import Data.Maybe (fromMaybe)
+import Data.IORef (IORef, atomicModifyIORef')
 import Data.Proxy (Proxy(..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -31,6 +34,7 @@ import Servant (Get, Handler(..), JSON, err404, serve, throwError, (:<|>)(..), (
 import Network.Wai (Middleware)
 import Network.Wai.Handler.Warp (run)
 import Network.Wai.Middleware.Cors (cors, corsRequestHeaders, simpleCorsResourcePolicy, simpleHeaders)
+import Numeric.Natural (Natural)
 
 import Pact.ApiReq (ApiKeyPair(..), mkExec, mkKeyPairs)
 import Pact.Interpreter (EvalResult(..), MsgData(..), PactDbEnv, defaultInterpreterState
@@ -39,7 +43,7 @@ import Pact.Gas (freeGasEnv)
 import Pact.PersistPactDb (DbEnv)
 import Pact.Persist.SQLite (SQLite, SQLiteConfig(..))
 import Pact.Types.Capability (CapSlot(..), SigCapability(..), capStack)
-import Pact.Types.Command ( Command(..), CommandResult(..), PactResult(..), ParsedCode(..), Payload(..), ProcessedCommand(..)
+import Pact.Types.Command ( Command(..), CommandResult(..), PactResult(..), ParsedCode(..), Payload(..), ProcessedCommand(..), RequestKey
                           , cmdToRequestKey, cmdPayload, pPayload, pSigners, verifyCommand)
 import Pact.Types.ChainMeta (PublicMeta, pmSender)
 import Pact.Types.Crypto (PPKScheme(..), PrivateKeyBS(..), PublicKeyBS(..))
@@ -48,14 +52,26 @@ import Pact.Types.RPC (PactRPC(..), ContMsg(..), ExecMsg(..))
 import Pact.Types.SPV (noSPVSupport)
 import Pact.Types.Hash (Hash(..))
 import Pact.Types.Persistence (ExecutionMode(..))
-import Pact.Types.Runtime (Gas(..), GasEnv(..), GasLimit(..), EvalState
+import Pact.Types.Runtime (Gas(..), GasEnv(..), GasLimit(..), EvalState, PactError
                           , catchesPactError, evalCapabilities, permissiveNamespacePolicy)
 import Pact.Server.API (ApiV1API)
 import Pact.Server.PactService (fullToHashLogCr)
-import Pact.Types.API (ListenResponse, ListenerRequest, Poll, PollResponses, RequestKeys, SubmitBatch)
+import Pact.Types.API (ListenResponse(..), ListenerRequest(..), Poll, PollResponses, RequestKeys(..), SubmitBatch(..))
 import Pact.Types.Server (throwCmdEx)
 
 import Kadenamint.Common
+
+import Control.Concurrent.STM.TBQueue (TBQueue, readTBQueue, writeTBQueue)
+import Control.Monad.STM (atomically)
+
+queueSize :: Natural
+queueSize = 2000
+
+addRequest :: TBQueue a -> a -> IO ()
+addRequest q msg = atomically $ writeTBQueue q msg
+
+getNextRequest :: TBQueue a -> IO a
+getNextRequest q = atomically $ readTBQueue q
 
 newtype DB = DB { unDB :: PactDbEnv (DbEnv SQLite) }
 
@@ -75,10 +91,10 @@ applyCmd
   -> Bool
   -> ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO a)
   -> Command Text
-  -> m a
-applyCmd (DB pactDbEnv) stateF shouldRollback eval cmd = liftIO $ do
+  -> m (Either PactError a)
+applyCmd (DB pactDbEnv) stateF shouldRollback eval cmd = liftIO $ catchesPactError $ do
   case verifyCommand $ fmap T.encodeUtf8 cmd of
-    f@ProcFail{} -> error (show f)
+    ProcFail f -> error (show f)
     ProcSucc (c :: Command (Payload PublicMeta ParsedCode)) -> do
       let
         p = c ^. cmdPayload
@@ -140,30 +156,49 @@ stockKeyFile = $(embedFile "pact/genesis/devnet/keys.yaml")
 initCapabilities :: [CapSlot SigCapability] -> EvalState -> EvalState
 initCapabilities cs = set (evalCapabilities . capStack) cs
 
-sendHandler :: SubmitBatch -> Handler RequestKeys
-sendHandler _ = todo Todo_ImplementEndpoint $ throwError err404
-
 pollHandler :: Poll -> Handler PollResponses
 pollHandler _ = todo Todo_ImplementEndpoint $ throwError err404
 
-listenHandler :: ListenerRequest -> Handler ListenResponse
-listenHandler _ = todo Todo_ImplementEndpoint $ throwError err404
+listenHandler :: RequestResults -> ListenerRequest -> Handler ListenResponse
+listenHandler requestResults (ListenerRequest reqKey) = liftIO $ do
+  slot <- ensureMVarExists requestResults reqKey
+  ListenResponse <$> readMVar slot
 
-localHandler ::  DB -> Command Text -> Handler (CommandResult Hash)
-localHandler db cmd = do
-  let maxGas (GasEnv (GasLimit g) _ _) = Gas $ fromIntegral g
-  liftIO $ do
-    er <- catchesPactError $ applyCmd db id True runExec cmd
-    pure $ CommandResult
-      { _crReqKey = cmdToRequestKey cmd
-      , _crTxId = _erTxId <=< preview _Right $ er
-      , _crResult = PactResult $ fmap lastOutput er
-      , _crGas = either (const $ maxGas kadenamintGasEnv) _erGas er
-      , _crLogs = fullToHashLogCr <$> evalLogs er
-      , _crContinuation = noCont
-      , _crMetaData = noMetadata
-      }
+sendHandler :: (Command Text -> IO ()) -> SubmitBatch -> Handler RequestKeys
+sendHandler rpc (SubmitBatch cmds) = liftIO $ do
+  for_ cmds rpc
+  pure $ RequestKeys $ fmap cmdToRequestKey cmds
+
+localHandler :: MonadIO m =>  DB -> Command Text -> m (CommandResult Hash)
+localHandler db cmd = mkCommandResult cmd <$> applyCmd db id True runExec cmd
+
+data RequestMsg = RequestMsg
+  { _requestMsg_eval :: ((ExecMsg ParsedCode -> IO EvalResult) -> (ContMsg -> IO EvalResult) -> PactRPC ParsedCode -> IO EvalResult)
+  , _requestMsg_command :: Command Text
+  }
+
+type RequestResults = IORef (HM.HashMap RequestKey (MVar (CommandResult Hash)))
+
+ensureMVarExists :: MonadIO m => RequestResults -> RequestKey -> m (MVar (CommandResult Hash))
+ensureMVarExists requestResults reqKey = liftIO $ do
+  new <- newEmptyMVar
+  atomicModifyIORef' requestResults $ \rrs ->
+    case HM.lookup reqKey rrs of
+      Nothing -> (HM.insert reqKey new rrs, new)
+      Just s -> (rrs, s)
+
+mkCommandResult :: Command Text -> (Either PactError EvalResult) -> CommandResult Hash
+mkCommandResult cmd er = CommandResult
+  { _crReqKey = cmdToRequestKey cmd
+  , _crTxId = _erTxId <=< preview _Right $ er
+  , _crResult = PactResult $ fmap lastOutput er
+  , _crGas = either (const $ maxGas kadenamintGasEnv) _erGas er
+  , _crLogs = fullToHashLogCr <$> evalLogs er
+  , _crContinuation = noCont
+  , _crMetaData = noMetadata
+  }
   where
+    maxGas (GasEnv (GasLimit g) _ _) = Gas $ fromIntegral g
     lastOutput = todo Todo_NonemptyPactCode $ last . _erOutput
     evalLogs = assume Assumption_OnlyEvalLogs $ fmap _erLogs . preview _Right
     noCont = assume Assumption_NoLocalContinuations Nothing
@@ -176,7 +211,6 @@ infoHandler v = pure $ NodeInfo
   , nodeChains = todo Todo_Naming ["0"]
   , nodeNumberOfChains = 1
   }
-
 
 data Version
   = Version_Devnet_00
@@ -206,18 +240,19 @@ type KadenamintAPI = ChainweaverAPI :<|> PactAPI
 kadenamintApi :: Proxy KadenamintAPI
 kadenamintApi = Proxy
 
-runApiServer :: DB -> IO ()
-runApiServer db = do
-  run port $ kadenamintCors $ serve kadenamintApi $ chainweaverApiHandlers :<|> todo Todo_Versioning pactApiHandlers
-  where
+runApiServer :: DB -> RequestResults -> (Command Text -> IO ()) -> IO ()
+runApiServer db rrs broadcast = do
+  let
     port = assume Assumption_FreePort 8081
     chainweaverApiHandlers = infoHandler Version_Devnet_00
-    pactApiHandlers = sendHandler
+    pactApiHandlers = sendHandler broadcast
                  :<|> pollHandler
-                 :<|> listenHandler
+                 :<|> listenHandler rrs
                  :<|> localHandler db
 
--- Simple cors with actualy simpleHeaders which includes content-type.
+  run port $ kadenamintCors $ serve kadenamintApi $ chainweaverApiHandlers :<|> todo Todo_Versioning pactApiHandlers
+
+-- Simple cors with actually simpleHeaders which includes content-type.
 kadenamintCors :: Middleware
 kadenamintCors = cors . const . Just $ simpleCorsResourcePolicy
     { corsRequestHeaders = simpleHeaders

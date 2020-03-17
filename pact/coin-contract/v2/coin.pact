@@ -1,3 +1,5 @@
+;;;;;;;;;;;;;;;;;;;;; coin contract ;;;;;;;;;;;;;;;;;;;;;
+
 (module coin GOVERNANCE
 
   @doc "'coin' represents the Kadena Coin Contract. This contract provides both the \
@@ -582,6 +584,22 @@
 
 )
 
-; Kadenamint bootstrapping
+;;;;;;;;;;;;;;;;;;;;; kadenamint ;;;;;;;;;;;;;;;;;;;;;
+
+(use coin)
+
 (create-table coin-table)
 (create-table allocation-table)
+
+(module ns MODULE_ADMIN
+  (defcap MODULE_ADMIN () true)
+
+  (defun success ()
+    true)
+  (defun failure ()
+    (enforce false "Disabled"))
+
+  (defconst GUARD_SUCCESS (create-user-guard (success)))
+  (defconst GUARD_FAILURE (create-user-guard (failure))))
+
+(define-namespace "free" GUARD_SUCCESS GUARD_FAILURE)

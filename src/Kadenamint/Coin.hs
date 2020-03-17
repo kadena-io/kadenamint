@@ -1,8 +1,11 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 module Kadenamint.Coin where
 
 import Control.Lens                                     ((&))
+import Control.Monad.Except                             (ExceptT(..), runExceptT)
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Data.Decimal                                     (Decimal, roundTo)
 import Data.Default                                     (def)
@@ -17,22 +20,22 @@ import Pact.Types.Capability                            (CapScope(CapCallStack),
 import Pact.Types.Exp                                   (Literal(LString, LDecimal))
 import Pact.Types.Info                                  (Info(..))
 import Pact.Types.Names                                 (ModuleName(..), QualifiedName(..))
+import Pact.Types.PactError                             (PactError)
 import Pact.Types.PactValue                             (PactValue(PLiteral))
 
 import Kadenamint.Common
 import Kadenamint.Pact
 
-applyCoinGenesis :: MonadIO m => DB -> (Text -> m ()) -> m ()
-applyCoinGenesis pactDbEnv logger = do
-  let eval = applyGenesisYaml pactDbEnv
-  void $ eval "pact/coin-contract/v2/load-fungible-asset-v2.yaml"
-  logger "Initialized fungible interface"
-  void $ eval "pact/coin-contract/v2/load-coin-contract-v2.yaml"
-  logger "Initialized coin contract"
-  void $ eval "pact/genesis/devnet/grants.yaml"
-  logger "Initialized coin accounts"
+applyCoinGenesis :: MonadIO m => DB -> (Text -> m ()) -> m (Either PactError ())
+applyCoinGenesis pactDbEnv logger = runExceptT $ do
+  let eval msg yaml = void $ ExceptT $
+        applyGenesisYaml pactDbEnv yaml <* logger msg
 
-applyGenesisYaml :: MonadIO m => DB -> FilePath -> m EvalResult
+  eval "Initialized fungible interface" "pact/coin-contract/v2/load-fungible-asset-v2.yaml"
+  eval "Initialized coin contract"      "pact/coin-contract/v2/load-coin-contract-v2.yaml"
+  eval "Initialized coin accounts"      "pact/genesis/devnet/grants.yaml"
+
+applyGenesisYaml :: MonadIO m => DB -> FilePath -> m (Either PactError EvalResult)
 applyGenesisYaml pactDbEnv fp = do
   (_, cmd) <- liftIO $ mkApiReq fp
   applyCmd pactDbEnv (initCapabilities [magic_COINBASE]) False runCmd cmd

@@ -9,6 +9,7 @@ import Control.Monad.Reader                             (ReaderT(..), runReaderT
 import qualified Data.Aeson as Aeson
 import Data.Decimal                                     (Decimal)
 import Data.Functor                                     (void)
+import Data.IORef                                       (newIORef)
 import Data.Maybe                                       (fromMaybe)
 import Data.Text                                        (Text)
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..))
@@ -18,6 +19,7 @@ import qualified Data.Text as T
 import Prelude                                          hiding (head, log)
 
 import Pact.Types.Capability
+import Pact.Types.Command
 
 import Kadenamint.ABCI as ABCI
 import Kadenamint.Coin
@@ -39,9 +41,9 @@ runEverything = do
 withNode :: MonadIO m => InitializedNode -> m ()
 withNode n = liftIO $ do
   let home = n ^. initializedNode_home
-
+  rrs <- newIORef mempty
   pactDbEnv <- initDb $ T.unpack home <> "/pact-db"
-  withAsync (runApiServer pactDbEnv) $ \_ -> runABCI pactDbEnv n
+  withAsync (runApiServer pactDbEnv rrs (broadcastPactCmd n)) $ \_ -> runABCI pactDbEnv rrs n
 
 runKadenamintNodeDir :: MonadIO m => Text -> m ()
 runKadenamintNodeDir = runNodeDir withNode
@@ -115,4 +117,17 @@ broadcastPactSigned sender caps code n = do
 
   flip runReaderT broadcastEnv $ do
     log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> port) (Just $ tshow code)
+    broadcastTransaction host port' $ tshow $ Aeson.toJSON cmd
+
+broadcastPactCmd :: MonadIO m => InitializedNode -> Command Text -> m ()
+broadcastPactCmd n cmd = do
+  let
+    cfg = _initializedNode_config n
+    rpc' = _configRPC_laddr $ _config_rpc cfg
+    addr = fromMaybe rpc' $ T.stripPrefix "tcp://" rpc'
+    (host, port) = cleave ":" addr
+    port' = fromMaybe (error "parsing error") $ T.readMaybe $ T.unpack port
+
+  flip runReaderT broadcastEnv $ do
+    log ("Broadcasting pact command to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> port) (Just $ tshow cmd)
     broadcastTransaction host port' $ tshow $ Aeson.toJSON cmd

@@ -37,6 +37,7 @@ library
                , servant-client
                , servant-server
                , shelly
+               , stm
                , text
                , time
                , tomland
