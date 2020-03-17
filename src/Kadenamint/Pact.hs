@@ -8,10 +8,11 @@
 {-# LANGUAGE TypeOperators #-}
 module Kadenamint.Pact where
 
-import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryReadMVar)
 import Control.Lens (preview, set, _Right, (&), (^.), (.~))
 import Control.Monad ((<=<))
 import Control.Monad.IO.Class (MonadIO(..))
+import Control.Monad.Trans.Maybe (MaybeT(..))
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as Aeson
 import Data.Bool (bool)
@@ -21,8 +22,8 @@ import Data.Default (Default (..))
 import Data.FileEmbed (embedFile)
 import Data.Foldable (Foldable(..), for_)
 import qualified Data.HashMap.Strict as HM
-import Data.Maybe (fromMaybe)
-import Data.IORef (IORef, atomicModifyIORef')
+import Data.Maybe (catMaybes, fromMaybe)
+import Data.IORef (IORef, atomicModifyIORef', readIORef)
 import Data.Proxy (Proxy(..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -30,7 +31,7 @@ import qualified Data.Text.Encoding as T
 import qualified Data.Yaml as Y
 import Data.Traversable (for)
 import GHC.Generics (Generic)
-import Servant (Get, Handler(..), JSON, err404, serve, throwError, (:<|>)(..), (:>))
+import Servant (Get, Handler(..), JSON, serve, (:<|>)(..), (:>))
 import Network.Wai (Middleware)
 import Network.Wai.Handler.Warp (run)
 import Network.Wai.Middleware.Cors (cors, corsRequestHeaders, simpleCorsResourcePolicy, simpleHeaders)
@@ -56,7 +57,7 @@ import Pact.Types.Runtime (Gas(..), GasEnv(..), GasLimit(..), EvalState, PactErr
                           , catchesPactError, evalCapabilities, permissiveNamespacePolicy)
 import Pact.Server.API (ApiV1API)
 import Pact.Server.PactService (fullToHashLogCr)
-import Pact.Types.API (ListenResponse(..), ListenerRequest(..), Poll, PollResponses, RequestKeys(..), SubmitBatch(..))
+import Pact.Types.API (ListenResponse(..), ListenerRequest(..), Poll(..), PollResponses(..), RequestKeys(..), SubmitBatch(..))
 import Pact.Types.Server (throwCmdEx)
 
 import Kadenamint.Common
@@ -156,8 +157,14 @@ stockKeyFile = $(embedFile "pact/genesis/devnet/keys.yaml")
 initCapabilities :: [CapSlot SigCapability] -> EvalState -> EvalState
 initCapabilities cs = set (evalCapabilities . capStack) cs
 
-pollHandler :: Poll -> Handler PollResponses
-pollHandler _ = todo Todo_ImplementEndpoint $ throwError err404
+pollHandler :: RequestResults -> Poll -> Handler PollResponses
+pollHandler rrs (Poll reqKeys) = liftIO $ do
+  allResults <- readIORef rrs
+  responses <- for (toList reqKeys) $ \rk -> runMaybeT $ do
+    slot <- MaybeT $ pure $ HM.lookup rk allResults
+    res <- MaybeT $ tryReadMVar slot
+    pure (rk, res)
+  pure $ PollResponses $ HM.fromList $ catMaybes responses
 
 listenHandler :: RequestResults -> ListenerRequest -> Handler ListenResponse
 listenHandler requestResults (ListenerRequest reqKey) = liftIO $ do
@@ -246,7 +253,7 @@ runApiServer db rrs broadcast = do
     port = assume Assumption_FreePort 8081
     chainweaverApiHandlers = infoHandler Version_Devnet_00
     pactApiHandlers = sendHandler broadcast
-                 :<|> pollHandler
+                 :<|> pollHandler rrs
                  :<|> listenHandler rrs
                  :<|> localHandler db
 

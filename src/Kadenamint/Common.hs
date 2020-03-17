@@ -93,7 +93,6 @@ data Todo
   = Todo_NonemptyPactCode
   | Todo_PlatformMetadata
   | Todo_SerializeEval
-  | Todo_ImplementEndpoint
   | Todo_Versioning
   | Todo_Naming
   | Todo_Upstream
