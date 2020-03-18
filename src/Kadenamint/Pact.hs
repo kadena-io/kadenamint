@@ -23,6 +23,7 @@ import Data.Default (Default (..))
 import Data.FileEmbed (embedFile)
 import Data.Foldable (Foldable(..), for_)
 import qualified Data.HashMap.Strict as HM
+import Data.List (sort)
 import Data.List.NonEmpty (sortWith)
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.IORef (IORef, atomicModifyIORef', readIORef)
@@ -162,7 +163,7 @@ initCapabilities cs = set (evalCapabilities . capStack) cs
 pollHandler :: RequestResults -> Poll -> Handler PollResponses
 pollHandler rrs (Poll reqKeys) = liftIO $ do
   allResults <- readIORef rrs
-  responses <- for (toList reqKeys) $ \rk -> runMaybeT $ do
+  responses <- for (sort $ toList reqKeys) $ \rk -> runMaybeT $ do
     slot <- MaybeT $ pure $ HM.lookup rk allResults
     res <- MaybeT $ tryReadMVar slot
     pure (rk, res)
