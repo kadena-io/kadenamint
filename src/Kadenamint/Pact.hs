@@ -8,6 +8,7 @@
 {-# LANGUAGE TypeOperators #-}
 module Kadenamint.Pact where
 
+import Control.Arrow ((&&&))
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryReadMVar)
 import Control.Lens (preview, set, _Right, (&), (^.), (.~))
 import Control.Monad ((<=<))
@@ -22,6 +23,7 @@ import Data.Default (Default (..))
 import Data.FileEmbed (embedFile)
 import Data.Foldable (Foldable(..), for_)
 import qualified Data.HashMap.Strict as HM
+import Data.List.NonEmpty (sortWith)
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.IORef (IORef, atomicModifyIORef', readIORef)
 import Data.Proxy (Proxy(..))
@@ -173,8 +175,10 @@ listenHandler requestResults (ListenerRequest reqKey) = liftIO $ do
 
 sendHandler :: (Command Text -> IO ()) -> SubmitBatch -> Handler RequestKeys
 sendHandler rpc (SubmitBatch cmds) = liftIO $ do
-  for_ cmds rpc
-  pure $ RequestKeys $ fmap cmdToRequestKey cmds
+  let keyed = fmap (cmdToRequestKey &&& id) cmds
+      sorted = sortWith fst keyed
+  for_ sorted $ rpc . snd
+  pure $ RequestKeys $ fmap fst sorted
 
 localHandler :: MonadIO m =>  DB -> Command Text -> m (CommandResult Hash)
 localHandler db cmd = mkCommandResult cmd <$> applyCmd db id True runExec cmd
