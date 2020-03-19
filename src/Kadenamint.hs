@@ -39,9 +39,10 @@ runEverything = do
 withNode :: MonadIO m => InitializedNode -> m ()
 withNode n = liftIO $ do
   let home = n ^. initializedNode_home
+      (_, proxyAppPort) = unsafeHostPortFromURI $ n ^. initializedNode_config . config_proxyApp
   rrs <- newIORef mempty
   pactDbEnv <- initDb $ T.unpack home <> "/pact-db"
-  withAsync (runApiServer pactDbEnv rrs (broadcastPactCmd n)) $ \_ -> runABCI pactDbEnv rrs n
+  withAsync (runApiServer pactDbEnv rrs (broadcastPactCmd n) (proxyAppPort + 1)) $ \_ -> runABCI pactDbEnv rrs n
 
 runKadenamintNodeDir :: MonadIO m => Text -> m ()
 runKadenamintNodeDir = runNodeDir withNode

@@ -18,7 +18,7 @@ test :: IO ()
 test = do
   initProcess
   m <- newManager defaultManagerSettings
-  let nodeUrl = BaseUrl Http "localhost" 8081 ""
+  let nodeUrl = BaseUrl Http "localhost" 26659 ""
       env = mkClientEnv m nodeUrl
       endpoint = runClientM ?? env
       getInfo :<|> _ = client kadenamintApi

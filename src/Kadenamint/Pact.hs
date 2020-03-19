@@ -252,17 +252,16 @@ type KadenamintAPI = ChainweaverAPI :<|> PactAPI
 kadenamintApi :: Proxy KadenamintAPI
 kadenamintApi = Proxy
 
-runApiServer :: DB -> RequestResults -> (Command Text -> IO ()) -> IO ()
-runApiServer db rrs broadcast = do
+runApiServer :: DB -> RequestResults -> (Command Text -> IO ()) -> Word -> IO ()
+runApiServer db rrs broadcast port = do
   let
-    port = assume Assumption_FreePort 8081
     chainweaverApiHandlers = infoHandler Version_Devnet_00
     pactApiHandlers = sendHandler broadcast
                  :<|> pollHandler rrs
                  :<|> listenHandler rrs
                  :<|> localHandler db
 
-  run port $ kadenamintCors $ serve kadenamintApi $ chainweaverApiHandlers :<|> todo Todo_Versioning pactApiHandlers
+  run (fromEnum port) $ kadenamintCors $ serve kadenamintApi $ chainweaverApiHandlers :<|> todo Todo_Versioning pactApiHandlers
 
 -- Simple cors with actually simpleHeaders which includes content-type.
 kadenamintCors :: Middleware
