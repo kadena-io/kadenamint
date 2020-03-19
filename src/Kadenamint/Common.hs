@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NumDecimals #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -5,17 +6,32 @@
 module Kadenamint.Common where
 
 import Control.Concurrent                               (threadDelay)
+import Control.Lens                                     (_Right, (^.), (^?))
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (MonadReader(..), asks)
 import Data.Colour.SRGB                                 (Colour, sRGB24)
+import Data.Maybe                                       (fromMaybe)
 import Data.String                                      (IsString(..))
 import Data.Text                                        (Text)
 import System.Console.ANSI                              (SGR(..), setSGRCode)
 import System.IO                                        (BufferMode (..), hSetBuffering, stderr, stdout)
+import Text.URI                                         (Authority(..), RText, RTextLabel(Host), URI, mkHost, unRText)
+import Text.URI.Lens                                    (uriAuthority)
 import qualified Data.Text as T
 
 localhost :: Text
 localhost = "127.0.0.1"
+
+localhostRText :: RText 'Host
+localhostRText = fromMaybe (error "localhostRText: invalid IP") $ mkHost localhost
+
+unsafeHostPortFromURI :: URI -> (Text, Word)
+unsafeHostPortFromURI uri = (h,p)
+  where
+    err component = error $ "unsafeHostPortFromURI: URI did not contain " <> component
+    Authority _ host port = fromMaybe (err "Authority") $ uri ^. uriAuthority ^? _Right
+    p = fromMaybe (err "Port") port
+    h = unRText host
 
 {- Logging -}
 newtype Env = Env

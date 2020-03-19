@@ -18,7 +18,6 @@ import Control.Monad.Reader                             (MonadReader(..), Reader
 import qualified Data.Aeson as Aeson
 import Data.Conduit.Network                             (serverSettings)
 import Data.Default                                     (Default(..))
-import Data.Maybe                                       (fromMaybe)
 import Data.String                                      (IsString(..))
 import Data.Text                                        (Text)
 import qualified Data.Text as T
@@ -56,11 +55,7 @@ runABCI pactDbEnv rrs n = do
     cfg = n ^. initializedNode_config
 
     env = abciEnv $ _config_moniker cfg
-
-    (_protocol, rest) = cleave "://" (cfg ^. config_proxyApp)
-    (host, port) = cleave ":" rest
-    port' = fromMaybe (error "parsing error") $ T.readMaybe (T.unpack port)
-    host' = fromString $ T.unpack host
+    (host, port) = unsafeHostPortFromURI $ cfg ^. config_proxyApp
 
     transformHandler :: HandlerT (Response t) -> IO (Response t)
     transformHandler er = do
@@ -70,7 +65,7 @@ runABCI pactDbEnv rrs n = do
         Left l -> pure $ ResponseException $ def
           & _exceptionError .~ l
 
-  serveAppWith (serverSettings port' host') mempty
+  serveAppWith (serverSettings (fromEnum port) (fromString . T.unpack $ host)) mempty
     $ transformApp transformHandler
     $ app pactDbEnv rrs
 

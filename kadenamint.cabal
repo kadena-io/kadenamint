@@ -32,6 +32,7 @@ library
                , http-types
                , lens
                , memory
+               , modern-uri
                , mtl
                , pact
                , servant-client

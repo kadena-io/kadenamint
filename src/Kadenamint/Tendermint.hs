@@ -12,7 +12,7 @@ module Kadenamint.Tendermint
   ) where
 
 import Control.Concurrent.Async                         (forConcurrently_, withAsync)
-import Control.Lens                                     (imap, makeLenses, (&), (^.), (.~))
+import Control.Lens                                     (_Right, _Just, imap, makeLenses, (&), (^.), (.~), (%~))
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (ReaderT(..), runReaderT)
 import Data.Bool                                        (bool)
@@ -27,6 +27,7 @@ import qualified Shelly as Sh
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..))
 import System.Which                                     (staticWhich)
 import Text.Read as T                                   (readMaybe)
+import Text.URI.Lens                                    (authHost, authPort, uriAuthority)
 import qualified Toml
 
 import Prelude hiding (log)
@@ -38,7 +39,7 @@ data InitializedNode = InitializedNode
   { _initializedNode_home        :: Text
   , _initializedNode_config      :: Config
   , _initializedNode_id          :: Text
-  } deriving (Eq, Ord, Read, Show, Generic)
+  } deriving (Eq, Ord, Show, Generic)
 
 newtype GlobalFlags = GlobalFlags
   { _globalFlags_home :: Text
@@ -194,11 +195,13 @@ initNetwork root size = shelly $ do
 
 updatePorts :: NodePorts -> Config -> Config
 updatePorts (NodePorts p2p rpc abci) cfg = cfg
-  & config_p2p . configP2P_laddr .~ l p2p
-  & config_rpc . configRPC_laddr .~ l rpc
-  & config_proxyApp .~ l abci
+  & config_p2p . configP2P_laddr %~ f p2p
+  & config_rpc . configRPC_laddr %~ f rpc
+  & config_proxyApp %~ f abci
   where
-    l p = "tcp://" <> localhost <> ":" <> tshow p
+    f p h = h
+      & uriAuthority . _Right . authPort . _Just .~ p
+      & uriAuthority . _Right . authHost .~ localhostRText
 
 withNetwork
   :: (InitializedNode -> IO ())

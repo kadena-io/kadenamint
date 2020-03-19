@@ -10,11 +10,9 @@ import qualified Data.Aeson as Aeson
 import Data.Decimal                                     (Decimal)
 import Data.Functor                                     (void)
 import Data.IORef                                       (newIORef)
-import Data.Maybe                                       (fromMaybe)
 import Data.Text                                        (Text)
-import System.Console.ANSI                              (SGR(..), ConsoleLayer(..))
-import qualified Text.Read as T
 import qualified Data.Text as T
+import System.Console.ANSI                              (SGR(..), ConsoleLayer(..))
 
 import Prelude                                          hiding (head, log)
 
@@ -108,26 +106,20 @@ broadcastPactSigned :: MonadIO m => Maybe Text -> Maybe [SigCapability] -> Text 
 broadcastPactSigned sender caps code n = do
   let
     cfg = _initializedNode_config n
-    rpc' = _configRPC_laddr $ _config_rpc cfg
-    addr = fromMaybe rpc' $ T.stripPrefix "tcp://" rpc'
-    (host, port) = cleave ":" addr
-    port' = fromMaybe (error "parsing error") $ T.readMaybe $ T.unpack port
+    (host, port) = unsafeHostPortFromURI $ _configRPC_laddr $ _config_rpc cfg
 
   cmd <- mkExec' code sender caps
 
   flip runReaderT broadcastEnv $ do
-    log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> port) (Just $ tshow code)
-    broadcastTransaction host port' $ tshow $ Aeson.toJSON cmd
+    log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> tshow port) (Just $ tshow code)
+    broadcastTransaction host port $ tshow $ Aeson.toJSON cmd
 
 broadcastPactCmd :: MonadIO m => InitializedNode -> Command Text -> m ()
 broadcastPactCmd n cmd = do
   let
     cfg = _initializedNode_config n
-    rpc' = _configRPC_laddr $ _config_rpc cfg
-    addr = fromMaybe rpc' $ T.stripPrefix "tcp://" rpc'
-    (host, port) = cleave ":" addr
-    port' = fromMaybe (error "parsing error") $ T.readMaybe $ T.unpack port
+    (host, port) = unsafeHostPortFromURI $ _configRPC_laddr $ _config_rpc cfg
 
   flip runReaderT broadcastEnv $ do
-    log ("Broadcasting pact command to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> port) (Just $ tshow cmd)
-    broadcastTransaction host port' $ tshow $ Aeson.toJSON cmd
+    log ("Broadcasting pact command to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> tshow port) (Just $ tshow cmd)
+    broadcastTransaction host port $ tshow $ Aeson.toJSON cmd
