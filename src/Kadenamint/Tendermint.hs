@@ -45,7 +45,7 @@ newtype GlobalFlags = GlobalFlags
   } deriving (Eq, Ord, Read, Show, Generic)
 
 data NetworkFlags = NetworkFlags
-  { _networkFlags_validators    :: Int
+  { _networkFlags_validators    :: Word
   , _networkFlags_output        :: Text
   , _networkFlags_populatePeers :: Bool
   } deriving (Eq, Ord, Read, Show, Generic)
@@ -56,7 +56,7 @@ concat <$> traverse makeLenses
   , ''NetworkFlags
   ]
 
-mkNetworkFlags :: Text -> Int -> NetworkFlags
+mkNetworkFlags :: Text -> Word -> NetworkFlags
 mkNetworkFlags networkRoot size = NetworkFlags
   { _networkFlags_validators    = size
   , _networkFlags_output        = networkRoot
@@ -116,15 +116,15 @@ coreEnv moniker = Env
   }
 
 data NodePorts = NodePorts
-  { _nodePorts_p2p :: Int
-  , _nodePorts_rpc :: Int
-  , _nodePorts_abci :: Int
+  { _nodePorts_p2p :: Word
+  , _nodePorts_rpc :: Word
+  , _nodePorts_abci :: Word
   } deriving (Eq, Ord, Read, Show, Generic)
 
-nodePortsOffset :: Int
+nodePortsOffset :: Word
 nodePortsOffset = 10
 
-nthNodePorts :: Int -> NodePorts
+nthNodePorts :: Word -> NodePorts
 nthNodePorts index =
   let offset = 26656 + nodePortsOffset * index
   in NodePorts offset (offset + 1) (offset + 2)
@@ -159,7 +159,7 @@ runNode withNode n = void $ do
       log "Launching" Nothing
       shelly $ tendermintNode $ GlobalFlags $ _initializedNode_home n
 
-initNetwork :: MonadIO m => Text -> Int -> m [InitializedNode]
+initNetwork :: MonadIO m => Text -> Word -> m [InitializedNode]
 initNetwork root size = shelly $ do
   void $ tendermintNetwork $ mkNetworkFlags root size
   for [0..size-1] $ \i -> do
@@ -167,11 +167,12 @@ initNetwork root size = shelly $ do
       home = root <> "/node" <> tshow i
     n <- loadNode home
     let
+      imapWord f = imap $ \x y -> f (toEnum x) y
       oldCfg = n ^. initializedNode_config
       ports = nthNodePorts i
 
       peers = T.splitOn "," $ oldCfg ^. config_p2p . configP2P_persistentPeers
-      peers' = T.intercalate "," $ flip imap peers $ \j peer ->
+      peers' = T.intercalate "," $ flip imapWord peers $ \j peer ->
         let (nid, rest) = cleave "@" peer
             (_host, port) = cleave ":" rest
             port' = case T.readMaybe (T.unpack port) of
@@ -201,7 +202,7 @@ updatePorts (NodePorts p2p rpc abci) cfg = cfg
 
 withNetwork
   :: (InitializedNode -> IO ())
-  -> Int
+  -> Word
   -> (Text -> [InitializedNode] -> IO ())
   -> IO ()
 withNetwork withNode size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do

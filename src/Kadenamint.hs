@@ -52,7 +52,7 @@ runKadenamintNode :: MonadIO m => InitializedNode -> m ()
 runKadenamintNode = runNode withNode
 
 withKadenamintNetwork
-  :: Int
+  :: Word
   -> (Text -> [InitializedNode] -> IO ())
   -> IO ()
 withKadenamintNetwork = withNetwork withNode
