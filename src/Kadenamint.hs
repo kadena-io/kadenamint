@@ -36,10 +36,10 @@ runEverything = do
   initProcess
   timelineCoinContract
 
-withNode :: MonadIO m => InitializedNode -> m ()
+withNode :: MonadIO m => TendermintNode -> m ()
 withNode n = liftIO $ do
-  let home = n ^. initializedNode_home
-      (_, proxyAppPort) = unsafeHostPortFromURI $ n ^. initializedNode_config . config_proxyApp
+  let home = n ^. tendermintNode_home
+      (_, proxyAppPort) = unsafeHostPortFromURI $ n ^. tendermintNode_config . config_proxyApp
   rrs <- newIORef mempty
   pactDbEnv <- initDb $ T.unpack home <> "/pact-db"
   withAsync (runApiServer pactDbEnv rrs (broadcastPactCmd n) (proxyAppPort + 1)) $ \_ -> runABCI pactDbEnv rrs n
@@ -47,22 +47,22 @@ withNode n = liftIO $ do
 runKadenamintNodeDir :: MonadIO m => Text -> m ()
 runKadenamintNodeDir = runNodeDir withNode
 
-runKadenamintNode :: MonadIO m => InitializedNode -> m ()
+runKadenamintNode :: MonadIO m => TendermintNode -> m ()
 runKadenamintNode = runNode withNode
 
 withKadenamintNetwork
   :: Word
-  -> (Text -> [InitializedNode] -> IO ())
+  -> (Text -> [TendermintNode] -> IO ())
   -> IO ()
 withKadenamintNetwork = withNetwork withNode
 
-showBalancesTx :: MonadIO m => InitializedNode -> m ()
+showBalancesTx :: MonadIO m => TendermintNode -> m ()
 showBalancesTx = broadcastPact showBalances
 
-showBalanceTx :: MonadIO m => Text -> InitializedNode -> m ()
+showBalanceTx :: MonadIO m => Text -> TendermintNode -> m ()
 showBalanceTx acct = broadcastPact ("(coin.get-balance '" <> acct <> ")")
 
-transferTx :: MonadIO m => Text -> Text -> Decimal -> InitializedNode -> m ()
+transferTx :: MonadIO m => Text -> Text -> Decimal -> TendermintNode -> m ()
 transferTx from to amount = broadcastPactSigned (Just from) (Just [mkTransferCapability from to amount]) (transfer from to amount <> showBalances)
 
 timelineCoinContract :: IO ()
@@ -100,13 +100,13 @@ timelineRepl = withKadenamintNetwork 2 $ \_ -> \case
     sleep 2 *> broadcastPact "(+ 1 2)" n1
   _ -> impossible
 
-broadcastPact :: MonadIO m => Text -> InitializedNode -> m ()
+broadcastPact :: MonadIO m => Text -> TendermintNode -> m ()
 broadcastPact = broadcastPactSigned Nothing Nothing
 
-broadcastPactSigned :: MonadIO m => Maybe Text -> Maybe [SigCapability] -> Text -> InitializedNode -> m ()
+broadcastPactSigned :: MonadIO m => Maybe Text -> Maybe [SigCapability] -> Text -> TendermintNode -> m ()
 broadcastPactSigned sender caps code n = do
   let
-    cfg = _initializedNode_config n
+    cfg = _tendermintNode_config n
     (host, port) = unsafeHostPortFromURI $ _configRPC_laddr $ _config_rpc cfg
 
   cmd <- mkExec' code sender caps
@@ -115,10 +115,10 @@ broadcastPactSigned sender caps code n = do
     log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> tshow port) (Just $ tshow code)
     broadcastTransaction host port $ tshow $ Aeson.toJSON cmd
 
-broadcastPactCmd :: MonadIO m => InitializedNode -> Command Text -> m ()
+broadcastPactCmd :: MonadIO m => TendermintNode -> Command Text -> m ()
 broadcastPactCmd n cmd = do
   let
-    cfg = _initializedNode_config n
+    cfg = _tendermintNode_config n
     (host, port) = unsafeHostPortFromURI $ _configRPC_laddr $ _config_rpc cfg
 
   flip runReaderT broadcastEnv $ do

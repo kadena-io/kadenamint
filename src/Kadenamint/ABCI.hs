@@ -49,10 +49,10 @@ abciEnv moniker = Env
       sgrify [SetRGBColor Foreground green] $ "\n[ABCI] Node: " <> moniker <> " | " <> x
   }
 
-runABCI :: DB -> RequestResults -> InitializedNode -> IO ()
+runABCI :: DB -> RequestResults -> TendermintNode -> IO ()
 runABCI pactDbEnv rrs n = do
   let
-    cfg = n ^. initializedNode_config
+    cfg = n ^. tendermintNode_config
 
     env = abciEnv $ _config_moniker cfg
     (host, port) = unsafeHostPortFromURI $ cfg ^. config_proxyApp
