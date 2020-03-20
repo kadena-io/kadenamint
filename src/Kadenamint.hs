@@ -1,9 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
+
 module Kadenamint where
 
 import Control.Concurrent.Async                         (async, cancel, withAsync)
-import Control.Lens                                     ((^.))
+import Control.Lens                                     (makeLenses, (^.))
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (ReaderT(..), runReaderT)
 import qualified Data.Aeson as Aeson
@@ -26,6 +28,19 @@ import Kadenamint.Pact
 import Kadenamint.Tendermint
 import Kadenamint.Tendermint.RPC
 
+data KadenamintNode = KadenamintNode
+  { _kadenamintNode_tendermint :: TendermintNode
+  , _kadenamintNode_pactAPIPort :: Word
+  }
+
+mkKadenamintNode :: TendermintNode -> KadenamintNode
+mkKadenamintNode tn = KadenamintNode tn apiPort
+  where
+    apiPort = proxyAppPort + 1
+    (_, proxyAppPort) = unsafeHostPortFromURI $ tn ^. tendermintNode_config . config_proxyApp
+
+makeLenses ''KadenamintNode
+
 broadcastEnv :: Env
 broadcastEnv = Env
   { _env_printer = sgrify [SetRGBColor Foreground cyan] . ("\n[RPC] " <>)
@@ -36,33 +51,40 @@ runEverything = do
   initProcess
   timelineCoinContract
 
-withNode :: MonadIO m => TendermintNode -> m ()
-withNode n = liftIO $ do
-  let home = n ^. tendermintNode_home
-      (_, proxyAppPort) = unsafeHostPortFromURI $ n ^. tendermintNode_config . config_proxyApp
+withNode :: MonadIO m => KadenamintNode -> m ()
+withNode kn = liftIO $ do
+  let tn = _kadenamintNode_tendermint kn
+      home = tn ^. tendermintNode_home
+      (_, proxyAppPort) = unsafeHostPortFromURI $ tn ^. tendermintNode_config . config_proxyApp
   rrs <- newIORef mempty
   pactDbEnv <- initDb $ T.unpack home <> "/pact-db"
-  withAsync (runApiServer pactDbEnv rrs (broadcastPactCmd n) (proxyAppPort + 1)) $ \_ -> runABCI pactDbEnv rrs n
+  withAsync (runApiServer pactDbEnv rrs (broadcastPactCmd kn) (proxyAppPort + 1)) $ \_ -> runABCI pactDbEnv rrs tn
+
+addKadenamintNode :: MonadIO m => Text -> Text -> NodePorts -> KadenamintNode -> m KadenamintNode
+addKadenamintNode home moniker ports preExistingNode = mkKadenamintNode <$> addTendermintNode home moniker ports (_kadenamintNode_tendermint preExistingNode)
+
+loadKadenamintNode :: MonadIO m => Text -> m KadenamintNode
+loadKadenamintNode = fmap mkKadenamintNode . loadTendermintNode
 
 runKadenamintNodeDir :: MonadIO m => Text -> m ()
-runKadenamintNodeDir = runNodeDir withNode
+runKadenamintNodeDir = runNodeDir mkKadenamintNode _kadenamintNode_tendermint withNode
 
-runKadenamintNode :: MonadIO m => TendermintNode -> m ()
-runKadenamintNode = runNode withNode
+runKadenamintNode :: MonadIO m => KadenamintNode -> m ()
+runKadenamintNode = runNode _kadenamintNode_tendermint withNode
 
 withKadenamintNetwork
   :: Word
-  -> (Text -> [TendermintNode] -> IO ())
+  -> (Text -> [KadenamintNode] -> IO ())
   -> IO ()
-withKadenamintNetwork = withNetwork withNode
+withKadenamintNetwork = withNetwork mkKadenamintNode _kadenamintNode_tendermint withNode
 
-showBalancesTx :: MonadIO m => TendermintNode -> m ()
+showBalancesTx :: MonadIO m => KadenamintNode -> m ()
 showBalancesTx = broadcastPact showBalances
 
-showBalanceTx :: MonadIO m => Text -> TendermintNode -> m ()
+showBalanceTx :: MonadIO m => Text -> KadenamintNode -> m ()
 showBalanceTx acct = broadcastPact ("(coin.get-balance '" <> acct <> ")")
 
-transferTx :: MonadIO m => Text -> Text -> Decimal -> TendermintNode -> m ()
+transferTx :: MonadIO m => Text -> Text -> Decimal -> KadenamintNode -> m ()
 transferTx from to amount = broadcastPactSigned (Just from) (Just [mkTransferCapability from to amount]) (transfer from to amount <> showBalances)
 
 timelineCoinContract :: IO ()
@@ -72,7 +94,7 @@ timelineCoinContract = withKadenamintNetwork 2 $ \root -> \case
     showBalancesTx n1
 
     sleep 2
-    n3 <- addNode (root <> "/nodeX") "nodeX" extraNodePorts n0
+    n3 <- addKadenamintNode (root <> "/nodeX") "nodeX" extraNodePorts n0
     a3 <- liftIO $ async $ runKadenamintNode n3
 
     sleep 2
@@ -100,13 +122,14 @@ timelineRepl = withKadenamintNetwork 2 $ \_ -> \case
     sleep 2 *> broadcastPact "(+ 1 2)" n1
   _ -> impossible
 
-broadcastPact :: MonadIO m => Text -> TendermintNode -> m ()
+broadcastPact :: MonadIO m => Text -> KadenamintNode -> m ()
 broadcastPact = broadcastPactSigned Nothing Nothing
 
-broadcastPactSigned :: MonadIO m => Maybe Text -> Maybe [SigCapability] -> Text -> TendermintNode -> m ()
-broadcastPactSigned sender caps code n = do
+broadcastPactSigned :: MonadIO m => Maybe Text -> Maybe [SigCapability] -> Text -> KadenamintNode -> m ()
+broadcastPactSigned sender caps code kn = do
   let
-    cfg = _tendermintNode_config n
+    tn = _kadenamintNode_tendermint kn
+    cfg = _tendermintNode_config tn
     (host, port) = unsafeHostPortFromURI $ _configRPC_laddr $ _config_rpc cfg
 
   cmd <- mkExec' code sender caps
@@ -115,10 +138,11 @@ broadcastPactSigned sender caps code n = do
     log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> tshow port) (Just $ tshow code)
     broadcastTransaction host port $ tshow $ Aeson.toJSON cmd
 
-broadcastPactCmd :: MonadIO m => TendermintNode -> Command Text -> m ()
-broadcastPactCmd n cmd = do
+broadcastPactCmd :: MonadIO m => KadenamintNode -> Command Text -> m ()
+broadcastPactCmd kn cmd = do
   let
-    cfg = _tendermintNode_config n
+    tn = _kadenamintNode_tendermint kn
+    cfg = _tendermintNode_config tn
     (host, port) = unsafeHostPortFromURI $ _configRPC_laddr $ _config_rpc cfg
 
   flip runReaderT broadcastEnv $ do

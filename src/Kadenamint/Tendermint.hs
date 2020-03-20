@@ -64,13 +64,13 @@ mkNetworkFlags networkRoot size = NetworkFlags
   , _networkFlags_populatePeers = True
   }
 
-loadNode :: MonadIO m => Text -> m TendermintNode
-loadNode home = pure (TendermintNode home)
-  <*> loadConfig home
+loadTendermintNode :: MonadIO m => Text -> m TendermintNode
+loadTendermintNode home = pure (TendermintNode home)
+  <*> loadTendermintConfig home
   <*> shelly (silently $ fmap T.strip $ tendermint (GlobalFlags home) "show_node_id" [])
 
-loadConfig :: MonadIO m => Text -> m Config
-loadConfig home = liftIO $ do
+loadTendermintConfig :: MonadIO m => Text -> m Config
+loadTendermintConfig home = liftIO $ do
   toml <- T.readFile $ T.unpack $ home <> "/config" <> "/config.toml"
   case Toml.decode configCodec toml of
     Left err -> do
@@ -133,10 +133,10 @@ nthNodePorts index =
 extraNodePorts :: NodePorts
 extraNodePorts = nthNodePorts (negate 1)
 
-addNode :: MonadIO m => Text -> Text -> NodePorts -> TendermintNode -> m TendermintNode
-addNode home moniker ports preExistingNode = shelly $ do
+addTendermintNode :: MonadIO m => Text -> Text -> NodePorts -> TendermintNode -> m TendermintNode
+addTendermintNode home moniker ports preExistingNode = shelly $ do
   void $ tendermint (GlobalFlags home) "init" []
-  n <- loadNode home
+  n <- loadTendermintNode home
 
   cp (genesisFile preExistingNode) (configDir n)
   let
@@ -148,17 +148,31 @@ addNode home moniker ports preExistingNode = shelly $ do
   pure $ n &
     tendermintNode_config .~ newCfg
 
-runNodeDir :: MonadIO m => (TendermintNode -> IO ()) -> Text -> m ()
-runNodeDir withNode dir = loadNode dir >>= runNode withNode
 
-runNode :: MonadIO m => (TendermintNode -> IO ()) -> TendermintNode -> m ()
-runNode withNode n = void $ do
+runTendermintNodeDir :: MonadIO m  => (TendermintNode -> IO ()) -> Text -> m ()
+runTendermintNodeDir = runNodeDir id id
+
+runNodeDir
+  :: MonadIO m
+  => (TendermintNode -> appNode)
+  -> (appNode -> TendermintNode)
+  -> (appNode -> IO ())
+  -> Text
+  -> m ()
+runNodeDir toAppNode fromAppNode withNode dir = loadTendermintNode dir >>= runNode fromAppNode withNode . toAppNode
+
+runTendermintNode :: MonadIO m => (TendermintNode -> IO ()) -> TendermintNode -> m ()
+runTendermintNode = runNode id
+
+runNode :: MonadIO m => (node -> TendermintNode) -> (node -> IO ()) -> node -> m ()
+runNode fromAppNode withNode n = void $ do
   initProcess
 
   liftIO $ withAsync (withNode n) $ \_ ->
-    flip runReaderT (coreEnv $ Just $ _config_moniker $ _tendermintNode_config n) $ do
+    let tn = fromAppNode n
+    in flip runReaderT (coreEnv $ Just $ _config_moniker $ _tendermintNode_config tn) $ do
       log "Launching" Nothing
-      shelly $ tendermintNode $ GlobalFlags $ _tendermintNode_home n
+      shelly $ tendermintNode $ GlobalFlags $ _tendermintNode_home tn
 
 initNetwork :: MonadIO m => Text -> Word -> m [TendermintNode]
 initNetwork root size = shelly $ do
@@ -166,7 +180,7 @@ initNetwork root size = shelly $ do
   for [0..size-1] $ \i -> do
     let
       home = root <> "/node" <> tshow i
-    n <- loadNode home
+    n <- loadTendermintNode home
     let
       imapWord f = imap $ \x y -> f (toEnum x) y
       oldCfg = n ^. tendermintNode_config
@@ -204,15 +218,17 @@ updatePorts (NodePorts p2p rpc abci) cfg = cfg
       & uriAuthority . _Right . authHost .~ localhostRText
 
 withNetwork
-  :: (TendermintNode -> IO ())
+  :: (TendermintNode -> appNode)
+  -> (appNode -> TendermintNode)
+  -> (appNode -> IO ())
   -> Word
-  -> (Text -> [TendermintNode] -> IO ())
+  -> (Text -> [appNode] -> IO ())
   -> IO ()
-withNetwork withNode size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
-  genesisNodes <- initNetwork root size
+withNetwork toAppNode fromAppNode withNode size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
+  genesisNodes <- fmap toAppNode <$> initNetwork root size
 
   flip runReaderT (coreEnv Nothing) $
     log ("Network of size " <> tshow size <> " has been setup at " <> root) Nothing
 
   liftIO $ withAsync (f root genesisNodes) $ \_ ->
-    forConcurrently_ genesisNodes (runNode withNode)
+    forConcurrently_ genesisNodes (runNode fromAppNode withNode)
