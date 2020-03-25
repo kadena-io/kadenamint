@@ -5,6 +5,7 @@
 
 kpkgs.rp.project ({ pkgs, hackGet, ... }:
   let
+    pactSrc = hackGet ./dep/pact; # https://github.com/kadena-io/pact/pull/786
     hs-abci = hackGet ./dep/hs-abci;
     tendermint = pkgs.callPackage ./dep/tendermint.nix {};
 
@@ -21,7 +22,7 @@ kpkgs.rp.project ({ pkgs, hackGet, ... }:
           '';
         }));
 
-        pact = dontCoverage super.pact;
+        pact = dontCoverage (addBuildDepend (self.callCabal2nix "pact" pactSrc {}) pkgs.z3);
 
         tomland = dontCheck (self.callHackageDirect {
           pkg = "tomland";
