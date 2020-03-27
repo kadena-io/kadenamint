@@ -23,6 +23,19 @@ To speed up the initial builds you can add public binary caches by following the
 ## Developing
 Several workflows are covered by the scripts at the root of the repository - they might take a long while to run the first time since Nix might not have cached the dependencies yet:
 
+The below scripts run three kadenamint servers on your local machine serving the Pact API.  You can interact with them in the Kadena Chainweaver wallet by adding one or more of the following as networks.
+
+* `localhost:26659`
+* `localhost:26669`
+* `localhost:26679`
+
+The network starts with coins in an account called `sender00` using the following key pair:
+
+```
+public: 368820f80c324bbc7c2b0610688a7da43e39f91d118732671cd9c7500ff43cca
+secret: 251a920c403ae8c8f65f59142316af3c82b631fba46ddea92ee8c95035bd2898
+```
+
 ##### `hoogle`
 Launches a [hoogle](https://hoogle.haskell.org/) server locally, with documentation for the exact versions of the Haskell dependencies in use.
 
