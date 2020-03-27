@@ -202,7 +202,7 @@ initNetwork root size = shelly $ do
           & config_p2p . configP2P_privatePeerIds .~ peers'
           & config_p2p . configP2P_addrBookStrict .~ False
           & config_p2p . configP2P_allowDuplicateIp .~ True
-          & config_consensus . configConsensus_createEmptyBlocksInterval .~ "10s"
+          & config_consensus . configConsensus_createEmptyBlocksInterval .~ "60s"
 
     storeConfig home cfg
     pure $ n & tendermintNode_config .~ cfg
