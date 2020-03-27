@@ -21,6 +21,7 @@ library
                , conduit-extra
                , data-default
                , Decimal
+               , errors
                , file-embed
                , here
                , hs-abci-server
@@ -28,6 +29,7 @@ library
                , hs-abci-extra
                , hs-tendermint-client
                , hspec
+               , hspec-core
                , http-client
                , http-types
                , lens

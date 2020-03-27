@@ -35,6 +35,7 @@ import qualified Data.Yaml as Y
 import Data.Traversable (for)
 import GHC.Generics (Generic)
 import Servant (Get, Handler(..), JSON, serve, (:<|>)(..), (:>))
+import Servant.Client (ClientM, client)
 import Network.Wai (Middleware)
 import Network.Wai.Handler.Warp (run)
 import Network.Wai.Middleware.Cors (cors, corsRequestHeaders, simpleCorsResourcePolicy, simpleHeaders)
@@ -251,6 +252,13 @@ type KadenamintAPI = ChainweaverAPI :<|> PactAPI
 
 kadenamintApi :: Proxy KadenamintAPI
 kadenamintApi = Proxy
+
+infoEndpoint :: ClientM NodeInfo
+sendEndpoint :: SubmitBatch -> ClientM RequestKeys
+pollEndpoint :: Poll -> ClientM PollResponses
+listenEndpoint :: ListenerRequest -> ClientM ListenResponse
+localEndpoint :: Command Text -> ClientM (CommandResult Hash)
+infoEndpoint :<|> sendEndpoint :<|> pollEndpoint :<|> listenEndpoint :<|> localEndpoint = client kadenamintApi
 
 runApiServer :: DB -> RequestResults -> (Command Text -> IO ()) -> Word -> IO ()
 runApiServer db rrs broadcast port = do
