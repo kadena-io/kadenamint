@@ -1,7 +1,9 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -12,6 +14,7 @@ module Kadenamint.Tendermint
   ) where
 
 import Control.Concurrent.Async                         (forConcurrently_, withAsync)
+import Control.Exception                                (IOException, handle)
 import Control.Lens                                     (_Right, _Just, imap, makeLenses, (&), (^.), (.~), (%~))
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (ReaderT(..), runReaderT)
@@ -22,7 +25,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Traversable                                 (for)
 import GHC.Generics
-import Shelly                                           (Sh, cp, shelly, silently, run, toTextIgnore, withTmpDir, (</>))
+import Shelly                                           (Sh, cp, pwd, shelly, silently, run, toTextIgnore, withTmpDir, (</>))
 import qualified Shelly as Sh
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..))
 import System.Which                                     (staticWhich)
@@ -34,6 +37,13 @@ import Prelude hiding (log)
 
 import Kadenamint.Common
 import Kadenamint.Tendermint.Config
+
+data AppNetwork a = AppNetwork
+  { _appNetwork_toAppNode :: TendermintNode -> a
+  , _appNetwork_fromAppNode :: a -> TendermintNode
+  , _appNetwork_withNode :: a -> IO ()
+  , _appNetwork_size :: Word
+  }
 
 data TendermintNode = TendermintNode
   { _tendermintNode_home        :: Text
@@ -174,6 +184,14 @@ runNode fromAppNode withNode n = void $ do
       log "Launching" Nothing
       shelly $ tendermintNode $ GlobalFlags $ _tendermintNode_home tn
 
+loadNetwork :: MonadIO m => Text -> Word -> m (Either IOException [TendermintNode])
+loadNetwork root size = liftIO $ handle onFailure $ do
+  fmap Right $ for [0..size-1] $ \i -> do
+    loadTendermintNode $ root <> "/node" <> tshow i
+  where
+    onFailure (e :: IOException) = pure $ Left e
+
+
 initNetwork :: MonadIO m => Text -> Word -> m [TendermintNode]
 initNetwork root size = shelly $ do
   void $ tendermintNetwork $ mkNetworkFlags root size
@@ -217,18 +235,33 @@ updatePorts (NodePorts p2p rpc abci) cfg = cfg
       & uriAuthority . _Right . authPort . _Just .~ p
       & uriAuthority . _Right . authHost .~ localhostRText
 
-withNetwork
-  :: (TendermintNode -> appNode)
-  -> (appNode -> TendermintNode)
-  -> (appNode -> IO ())
-  -> Word
-  -> (Text -> [appNode] -> IO ())
-  -> IO ()
-withNetwork toAppNode fromAppNode withNode size f = shelly $ withTmpDir $ \(toTextIgnore -> root) -> do
-  genesisNodes <- fmap toAppNode <$> initNetwork root size
+withTempDir :: MonadIO m => (Text -> IO a) -> m a
+withTempDir f = shelly . withTmpDir $ liftIO . f . toTextIgnore
 
-  flip runReaderT (coreEnv Nothing) $
-    log ("Network of size " <> tshow size <> " has been setup at " <> root) Nothing
+withCurrentDir :: MonadIO m => (Text -> IO a) -> m a
+withCurrentDir f = shelly $ pwd >>= liftIO . f . toTextIgnore
 
-  liftIO $ withAsync (f root genesisNodes) $ \_ ->
-    forConcurrently_ genesisNodes (runNode fromAppNode withNode)
+withNetwork :: Text -> AppNetwork node -> (Text -> [node] -> IO ()) -> IO ()
+withNetwork root net f = do
+  let size = _appNetwork_size net
+      report outcome = flip runReaderT (coreEnv Nothing) $
+        log (outcome <> " network of size " <> tshow size <> " at " <> root) Nothing
+      toAppNodes = fmap (_appNetwork_toAppNode net)
+      launchNodes ns = forConcurrently_ ns $
+        runNode (_appNetwork_fromAppNode net) (_appNetwork_withNode net)
+
+  loadNetwork root size >>= \case
+    Left _ -> do
+      genesisNodes <- toAppNodes <$> initNetwork root size
+      report "Initialized"
+      liftIO $ withAsync (f root genesisNodes) $ \_ ->
+        launchNodes genesisNodes
+    Right ns -> do
+      report "Restored"
+      launchNodes $ toAppNodes ns
+
+withThrowawayNetwork :: AppNetwork node -> (Text -> [node] -> IO ()) -> IO ()
+withThrowawayNetwork net f = withTempDir $ \x -> withNetwork x net f
+
+withLocalNetwork :: AppNetwork node -> (Text -> [node] -> IO ()) -> IO ()
+withLocalNetwork net f = withCurrentDir $ \x -> withNetwork x net f

@@ -6,3 +6,6 @@ result-*
 dist-newstyle
 ghcid-output.txt
 .ghc.environment.*
+
+#tendermint
+.network

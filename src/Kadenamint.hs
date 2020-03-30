@@ -49,10 +49,10 @@ broadcastEnv = Env
 runEverything :: IO ()
 runEverything = do
   initProcess
-  timelineCoinContract
+  withLocalKadenamintNetwork 2 timelineCoinContract
 
-withNode :: MonadIO m => KadenamintNode -> m ()
-withNode kn = liftIO $ do
+withKadenamintNode :: MonadIO m => KadenamintNode -> m ()
+withKadenamintNode kn = liftIO $ do
   let tn = _kadenamintNode_tendermint kn
       home = tn ^. tendermintNode_home
       (_, proxyAppPort) = unsafeHostPortFromURI $ tn ^. tendermintNode_config . config_proxyApp
@@ -67,16 +67,28 @@ loadKadenamintNode :: MonadIO m => Text -> m KadenamintNode
 loadKadenamintNode = fmap mkKadenamintNode . loadTendermintNode
 
 runKadenamintNodeDir :: MonadIO m => Text -> m ()
-runKadenamintNodeDir = runNodeDir mkKadenamintNode _kadenamintNode_tendermint withNode
+runKadenamintNodeDir = runNodeDir mkKadenamintNode _kadenamintNode_tendermint withKadenamintNode
 
 runKadenamintNode :: MonadIO m => KadenamintNode -> m ()
-runKadenamintNode = runNode _kadenamintNode_tendermint withNode
+runKadenamintNode = runNode _kadenamintNode_tendermint withKadenamintNode
+
+withThrowawayKadenamintNetwork :: Word -> (Text -> [KadenamintNode] -> IO ()) -> IO ()
+withThrowawayKadenamintNetwork size f = withTempDir $ \x -> withKadenamintNetwork x size f
+
+withLocalKadenamintNetwork :: Word -> (Text -> [KadenamintNode] -> IO ()) -> IO ()
+withLocalKadenamintNetwork size f = withCurrentDir $ \x -> withKadenamintNetwork (x <> "/.network") size f
 
 withKadenamintNetwork
-  :: Word
+  :: Text
+  -> Word
   -> (Text -> [KadenamintNode] -> IO ())
   -> IO ()
-withKadenamintNetwork = withNetwork mkKadenamintNode _kadenamintNode_tendermint withNode
+withKadenamintNetwork root size = withNetwork root $ AppNetwork
+  { _appNetwork_toAppNode = mkKadenamintNode
+  , _appNetwork_fromAppNode = _kadenamintNode_tendermint
+  , _appNetwork_withNode = withKadenamintNode
+  , _appNetwork_size = size
+  }
 
 showBalancesTx :: MonadIO m => KadenamintNode -> m ()
 showBalancesTx = broadcastPact showBalances
@@ -87,8 +99,8 @@ showBalanceTx acct = broadcastPact ("(coin.get-balance '" <> acct <> ")")
 transferTx :: MonadIO m => Text -> Text -> Decimal -> KadenamintNode -> m ()
 transferTx from to amount = broadcastPactSigned (Just from) (Just [mkTransferCapability from to amount]) (transfer from to amount <> showBalances)
 
-timelineCoinContract :: IO ()
-timelineCoinContract = withKadenamintNetwork 2 $ \root -> \case
+timelineCoinContract :: Text -> [KadenamintNode] -> IO ()
+timelineCoinContract root = \case
   [n0, n1] -> do
     sleep 4
     showBalancesTx n1
@@ -97,7 +109,7 @@ timelineCoinContract = withKadenamintNetwork 2 $ \root -> \case
     n3 <- addKadenamintNode (root <> "/nodeX") "nodeX" extraNodePorts n0
     a3 <- liftIO $ async $ runKadenamintNode n3
 
-    sleep 2
+    sleep 4
     showBalancesTx n3
 
     sleep 2

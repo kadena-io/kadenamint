@@ -43,10 +43,10 @@ Launches a [hoogle](https://hoogle.haskell.org/) server locally, with documentat
 Launches an Haskell repl where networks/nodes can be controlled interactively.
 
 ##### `run`
-Like `watch`, but will also run a Kadenamint network in a temporary directory and broadcast some coin transfer transactions.
+Like `watch`, but will also run a persistent Kadenamint network in the local directory.
 
 ##### `test`
-Like `watch`, but will also run the test suite.
+Like `watch`, but will also run a Kadenamint network in a temporary directory and exercise the test suite.
 
 ##### `tmux`
 Launches a [tmux](https://github.com/tmux/tmux/wiki) session with a Tendermint testnet initialized. Adds an extra panel for each node with an Haskell repl where the prompt is prepopulated by the command to launch the node.

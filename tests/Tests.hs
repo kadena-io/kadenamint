@@ -44,7 +44,7 @@ test = do
         nodeUrl = BaseUrl Http "localhost" apiPort ""
         env = mkClientEnv m nodeUrl
 
-  withKadenamintNetwork 3 $ \root -> \case
+  withThrowawayKadenamintNetwork 3 $ \root -> \case
     nodes@[n0, n1, n2] -> do
       let separator = T.replicate 80 "="
       T.putStrLn $ T.unlines
