@@ -115,13 +115,6 @@ timelineCoinContract = withKadenamintNetwork 2 $ \root -> \case
 
   _ -> impossible
 
-timelineRepl :: IO ()
-timelineRepl = withKadenamintNetwork 2 $ \_ -> \case
-  [n0, n1] -> do
-    sleep 3 *> broadcastPact "(+ 1 2)" n0
-    sleep 2 *> broadcastPact "(+ 1 2)" n1
-  _ -> impossible
-
 broadcastPact :: MonadIO m => Text -> KadenamintNode -> m ()
 broadcastPact = broadcastPactSigned Nothing Nothing
 
