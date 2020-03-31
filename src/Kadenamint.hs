@@ -5,7 +5,7 @@
 module Kadenamint where
 
 import Control.Concurrent.Async                         (async, cancel, withAsync)
-import Control.Lens                                     (makeLenses, (^.))
+import Control.Lens                                     (makeLenses, (^.), (<&>))
 import Control.Monad.IO.Class                           (MonadIO(..))
 import Control.Monad.Reader                             (ReaderT(..), runReaderT)
 import qualified Data.Aeson as Aeson
@@ -14,12 +14,15 @@ import Data.Functor                                     (void)
 import Data.IORef                                       (newIORef)
 import Data.Text                                        (Text)
 import qualified Data.Text as T
+import Network.HTTP.Client                              (defaultManagerSettings, newManager)
+import Servant.Client                                   (BaseUrl(..),  Scheme(Http), mkClientEnv, runClientM)
 import System.Console.ANSI                              (SGR(..), ConsoleLayer(..))
 
 import Prelude                                          hiding (head, log)
 
-import Pact.Types.Capability
-import Pact.Types.Command
+import Pact.Types.Capability                            (SigCapability)
+import Pact.Types.Command                               (Command(..), CommandResult(..), PactResult(..))
+import Pact.Types.Pretty                                (pretty)
 
 import Kadenamint.ABCI as ABCI
 import Kadenamint.Coin
@@ -31,7 +34,7 @@ import Kadenamint.Tendermint.RPC
 data KadenamintNode = KadenamintNode
   { _kadenamintNode_tendermint :: TendermintNode
   , _kadenamintNode_pactAPIPort :: Word
-  }
+  } deriving (Eq, Ord, Show)
 
 mkKadenamintNode :: TendermintNode -> KadenamintNode
 mkKadenamintNode tn = KadenamintNode tn apiPort
@@ -140,7 +143,7 @@ broadcastPactSigned sender caps code kn = do
   cmd <- mkExec' code sender caps
 
   flip runReaderT broadcastEnv $ do
-    log ("Broadcasting pact code to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> tshow port) (Just $ tshow code)
+    log ("Broadcasting pact code via node #" <> _config_moniker cfg <> " at " <> host <> ":" <> tshow port) (Just $ tshow code)
     broadcastTransaction host port $ tshow $ Aeson.toJSON cmd
 
 broadcastPactCmd :: MonadIO m => KadenamintNode -> Command Text -> m ()
@@ -151,5 +154,28 @@ broadcastPactCmd kn cmd = do
     (host, port) = unsafeHostPortFromURI $ _configRPC_laddr $ _config_rpc cfg
 
   flip runReaderT broadcastEnv $ do
-    log ("Broadcasting pact command to node #" <> _config_moniker cfg <> " at " <> host <> ":" <> tshow port) (Just $ tshow cmd)
+    log ("Broadcasting pact command via node #" <> _config_moniker cfg <> " at " <> host <> ":" <> tshow port) (Just $ tshow cmd)
     broadcastTransaction host port $ tshow $ Aeson.toJSON cmd
+
+localCall :: MonadIO m => Text -> KadenamintNode -> m String
+localCall code kn = do
+  m <- liftIO $ newManager defaultManagerSettings
+  cmd <- mkExec' code Nothing Nothing
+
+  let
+    apiPort = fromEnum $ _kadenamintNode_pactAPIPort kn
+    nodeUrl = BaseUrl Http "localhost" apiPort ""
+    env = mkClientEnv m nodeUrl
+
+    tn = _kadenamintNode_tendermint kn
+    cfg = _tendermintNode_config tn
+    (host, port) = unsafeHostPortFromURI $ _configRPC_laddr $ _config_rpc cfg
+
+  flip runReaderT broadcastEnv $ do
+    log ("Sending pact command to /local endpoint of node #" <> _config_moniker cfg <> " at " <> host <> ":" <> tshow port) (Just $ tshow cmd)
+
+  liftIO $ runClientM (localEndpoint cmd) env <&> \case
+    Left err -> show err
+    Right cr -> case _crResult cr of
+      PactResult (Left err) -> show err
+      PactResult (Right er) -> show $ pretty $ er
