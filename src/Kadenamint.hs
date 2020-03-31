@@ -52,8 +52,8 @@ broadcastEnv = Env
 runEverything :: IO ()
 runEverything = do
   initProcess
-  withLocalKadenamintNetwork 2 $ \root -> \case
-    [n0, n1] -> timelineCoinContract root n0 n1
+  withLocalKadenamintNetwork 3 $ \root -> \case
+    [n0, n1, _n2] -> timelineCoinContract root n0 n1
     _ -> impossible
 
 withKadenamintNode :: MonadIO m => KadenamintNode -> m ()
