@@ -52,7 +52,9 @@ broadcastEnv = Env
 runEverything :: IO ()
 runEverything = do
   initProcess
-  withLocalKadenamintNetwork 2 timelineCoinContract
+  withLocalKadenamintNetwork 2 $ \root -> \case
+    [n0, n1] -> timelineCoinContract root n0 n1
+    _ -> impossible
 
 withKadenamintNode :: MonadIO m => KadenamintNode -> m ()
 withKadenamintNode kn = liftIO $ do
@@ -102,9 +104,8 @@ showBalanceTx acct = broadcastPact ("(coin.get-balance '" <> acct <> ")")
 transferTx :: MonadIO m => Text -> Text -> Decimal -> KadenamintNode -> m ()
 transferTx from to amount = broadcastPactSigned (Just from) (Just [mkTransferCapability from to amount]) (transfer from to amount <> showBalances)
 
-timelineCoinContract :: Text -> [KadenamintNode] -> IO ()
-timelineCoinContract root = \case
-  [n0, n1] -> do
+timelineCoinContract :: Text -> KadenamintNode -> KadenamintNode -> IO ()
+timelineCoinContract root n0 n1 = do
     sleep 4
     showBalancesTx n1
 
@@ -127,8 +128,6 @@ timelineCoinContract root = \case
 
     sleep 4
     void $ liftIO $ async $ runKadenamintNode n3
-
-  _ -> impossible
 
 broadcastPact :: MonadIO m => Text -> KadenamintNode -> m ()
 broadcastPact = broadcastPactSigned Nothing Nothing
