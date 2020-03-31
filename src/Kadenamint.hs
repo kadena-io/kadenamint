@@ -108,24 +108,24 @@ timelineCoinContract root = \case
     sleep 4
     showBalancesTx n1
 
-    sleep 2
+    sleep 4
     n3 <- addKadenamintNode (root <> "/nodeX") "nodeX" extraNodePorts n0
     a3 <- liftIO $ async $ runKadenamintNode n3
 
     sleep 4
     showBalancesTx n3
 
-    sleep 2
+    sleep 4
     transferTx "sender00" "sender01" 1 n3
 
-    sleep 2
+    sleep 4
     liftIO $ cancel a3
     flip runReaderT (coreEnv Nothing) $ log "Stopping nodeX" Nothing
 
-    sleep 2
+    sleep 4
     transferTx "sender00" "sender02" 1 n0
 
-    sleep 2
+    sleep 4
     void $ liftIO $ async $ runKadenamintNode n3
 
   _ -> impossible
