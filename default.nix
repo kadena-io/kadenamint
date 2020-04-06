@@ -6,11 +6,11 @@
 kpkgs.rp.project ({ pkgs, hackGet, ... }:
   let
     pactSrc = hackGet ./dep/pact; # https://github.com/kadena-io/pact/pull/786
-    hs-abci = hackGet ./dep/hs-abci;
+    kepler = hackGet ./dep/kepler;
     tendermint = pkgs.callPackage ./dep/tendermint.nix {};
 
     overrides = with pkgs.haskell.lib; pkgs.lib.foldr pkgs.lib.composeExtensions  (_: _: {}) [
-      (import hs-abci {}).overrides
+      (import kepler {}).overrides
       (self: super: {
         # TODO: make tests as pure as possible
         kadenamint = dontCheck (overrideCabal super.kadenamint (drv: {
