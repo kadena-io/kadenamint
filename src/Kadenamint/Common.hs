@@ -89,16 +89,7 @@ fatal = error "fatal error"
 impossible :: a
 impossible = error "the 'impossible' has happened"
 
-{- Issue tracking -}
-_UPSTREAM_ :: Text -> a -> a
-_UPSTREAM_ _ = id
-
-_TODO_ :: Text -> a -> a
-_TODO_ _ = id
-
-_ASSUME_ :: Text -> a -> a
-_ASSUME_ _ = id
-
+{- Executable documentation -}
 todo :: Todo -> a -> a
 todo _ = id
 
@@ -117,3 +108,4 @@ data Assumption
   = Assumption_NoLocalContinuations
   | Assumption_OnlyEvalLogs
   | Assumption_FreePort
+  | Assumption_Encoding

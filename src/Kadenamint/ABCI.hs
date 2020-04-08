@@ -149,4 +149,4 @@ runPactTransaction logParsed logEvaluated accept reject pactDbEnv shouldRollback
         Aeson.Success t -> Right t
 
 decodeBase64String :: Base64String -> Either T.UnicodeException Text
-decodeBase64String (Base64String bs) = T.decodeUtf8' bs & _TODO_ "make sure this is the right decoding"
+decodeBase64String (Base64String bs) = T.decodeUtf8' bs & assume Assumption_Encoding
