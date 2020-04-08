@@ -1,10 +1,11 @@
-dist-newstyle
+#nix
 result
-result-android
-result-ios
-result-exe
-.attr-cache
-ghcid-output.txt
+result-*
 
-.tendermint
+#haskell
+dist-newstyle
+ghcid-output.txt
 .ghc.environment.*
+
+#tendermint
+.network

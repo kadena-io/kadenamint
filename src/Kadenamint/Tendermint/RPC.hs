@@ -18,10 +18,10 @@ import Network.Tendermint.Client
 
 import Kadenamint.Common
 
-broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> Int -> Text -> m ()
+broadcastTransaction :: (MonadIO m, MonadReader Env m) => Text -> Word -> Text -> m ()
 broadcastTransaction host port t = liftIO $ do
   let
-    cfg = defaultConfig (T.encodeUtf8 host) port
+    cfg = defaultConfig (T.encodeUtf8 host) (fromEnum port)
     broadcast = runTendermintM cfg $ broadcastTxCommit $ RequestBroadcastTxCommit $ Base64.fromBytes $ T.encodeUtf8 t
 
   r <- fmap Right broadcast

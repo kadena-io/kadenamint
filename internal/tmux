@@ -36,7 +36,7 @@ sleep 1
 
 $TMUX select-pane -t 3
 $TMUX send-keys './internal/repl' ENTER
-$TMUX send-keys ENTER 'loadNode ".testnet/node0" >>= addNode ".testnet/nodeX" "nodeX" extraNodePorts >>= runKadenamintNode'
+$TMUX send-keys ENTER 'loadKadenamintNode ".testnet/node0" >>= addKadenamintNode ".testnet/nodeX" "nodeX" extraNodePorts >>= runKadenamintNode'
 sleep 1
 
 $TMUX select-pane -t 4
@@ -44,7 +44,7 @@ $TMUX send-keys ENTER './internal/repl' ENTER
 
 rm -rf .testnet
 $TMUX send-keys ENTER 'initNetwork ".testnet" 3' ENTER
-$TMUX send-keys ENTER 'loadNode ".testnet/node0" >>= showBalancesTx'
+$TMUX send-keys ENTER 'loadKadenamintNode ".testnet/node0" >>= showBalancesTx'
 $TMUX attach
 
 $TMUX select-pane -t 0
